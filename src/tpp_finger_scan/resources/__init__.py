@@ -1,0 +1,2 @@
+"""Resource UI aplikasi."""
+

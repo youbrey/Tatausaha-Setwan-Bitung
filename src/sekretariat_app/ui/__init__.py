@@ -1,0 +1,1 @@
+"""Antarmuka Qt aplikasi terpadu."""

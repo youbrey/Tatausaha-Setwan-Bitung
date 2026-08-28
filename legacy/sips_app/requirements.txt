@@ -1,0 +1,16 @@
+customtkinter>=5.2.0
+docxtpl>=0.16.7
+python-docx>=1.1.0
+pandas>=2.0.0
+openpyxl>=3.1.0
+matplotlib>=3.8.0      # grafik di halaman Dashboard (app/ui/dashboard_window.py)
+
+# Opsional, untuk Live Preview PDF (aplikasi tetap berjalan tanpa ini,
+# panel preview hanya akan menampilkan pesan "tidak tersedia"):
+docx2pdf>=0.1.8       # konversi docx->pdf via MS Word (Windows/Mac saja)
+PyMuPDF>=1.23.0        # render halaman PDF jadi gambar untuk preview (paket: fitz)
+Pillow>=10.0.0
+tkcalendar>=1.6.1      # widget kalender (date picker) yang lebih baik
+
+# Build executable
+pyinstaller>=6.3.0

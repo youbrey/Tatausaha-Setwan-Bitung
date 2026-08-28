@@ -1,0 +1,2 @@
+"""Antarmuka desktop Qt."""
+

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+*.spec.bak
+.pytest_cache/
+.coverage
+/data/
+/outputs/
+/logs/
+*.sqlite3

@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Setup aplikasi",
+      "type": "shell",
+      "command": "${workspaceFolder}\\setup_windows.bat",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Jalankan aplikasi",
+      "type": "shell",
+      "command": "${workspaceFolder}\\run_app.bat",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Jalankan pengujian",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "unittest", "discover", "-s", "tests", "-v"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "PYTHONPATH": "${workspaceFolder}\\src" }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build EXE Windows",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build_windows.bat",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

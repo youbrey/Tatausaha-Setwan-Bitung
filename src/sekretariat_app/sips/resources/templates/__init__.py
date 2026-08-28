@@ -1,0 +1,1 @@
+"""Template Word resmi SIPS."""

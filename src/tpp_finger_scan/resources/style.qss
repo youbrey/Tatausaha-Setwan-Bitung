@@ -1,0 +1,109 @@
+* {
+    font-family: "Segoe UI";
+    font-size: 10pt;
+    color: #17324D;
+}
+QMainWindow, QWidget#Root {
+    background: #F5F7FA;
+}
+QLabel#AppTitle {
+    font-size: 22pt;
+    font-weight: 700;
+    color: #102A43;
+}
+QLabel#Subtitle, QLabel#StatusLabel, QLabel#StatLabel {
+    color: #66788A;
+}
+QLabel#OfflineBadge {
+    color: #087443;
+    background: #DDF5E8;
+    border: 1px solid #B7E7CE;
+    border-radius: 14px;
+    padding: 6px 12px;
+    font-weight: 700;
+}
+QFrame#Card, QFrame#StatCard {
+    background: #FFFFFF;
+    border: 1px solid #E3E8EF;
+    border-radius: 10px;
+}
+QLabel#FieldLabel {
+    font-weight: 600;
+    margin-right: 6px;
+}
+QLabel#StatValue {
+    font-size: 20pt;
+    font-weight: 700;
+    color: #17324D;
+}
+QLabel#StatValue[alert="true"] {
+    color: #B42318;
+}
+QLineEdit, QComboBox {
+    background: #FFFFFF;
+    border: 1px solid #C9D3DF;
+    border-radius: 7px;
+    padding: 7px 10px;
+    min-height: 22px;
+    selection-background-color: #1D73E8;
+}
+QLineEdit:focus, QComboBox:focus {
+    border: 1px solid #1D73E8;
+}
+QPushButton {
+    background: #FFFFFF;
+    border: 1px solid #C9D3DF;
+    border-radius: 7px;
+    padding: 8px 13px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background: #F0F5FA;
+    border-color: #9FB2C6;
+}
+QPushButton:disabled {
+    color: #98A2B3;
+    background: #F2F4F7;
+}
+QPushButton#PrimaryButton {
+    color: #FFFFFF;
+    background: #1D73E8;
+    border-color: #1D73E8;
+}
+QPushButton#PrimaryButton:hover {
+    background: #155FC0;
+}
+QTableView#ResultTable {
+    background: #FFFFFF;
+    alternate-background-color: #F8FAFC;
+    border: 1px solid #DCE3EB;
+    border-radius: 9px;
+    gridline-color: #E8EDF2;
+    selection-background-color: #DCEBFF;
+    selection-color: #17324D;
+}
+QHeaderView::section {
+    background: #17324D;
+    color: #FFFFFF;
+    border: 0;
+    border-right: 1px solid #2B4865;
+    padding: 9px 7px;
+    font-weight: 700;
+}
+QScrollBar:vertical {
+    background: #F1F4F7;
+    width: 12px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #B8C4D0;
+    border-radius: 5px;
+    min-height: 28px;
+}
+QToolTip {
+    background: #17324D;
+    color: #FFFFFF;
+    border: 0;
+    padding: 6px;
+}
+

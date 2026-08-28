@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sekretariat-dprd-bitung"
+version = "0.4.0"
+description = "Aplikasi desktop terpadu Sekretariat DPRD Kota Bitung"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PySide6>=6.7,<7",
+  "pdfplumber>=0.11,<1",
+  "openpyxl>=3.1,<4",
+  "Pillow>=10,<13",
+  "python-docx>=1.1,<2",
+  "docxtpl>=0.16,<1",
+  "PyMuPDF>=1.23,<2",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.10,<7"]
+
+[project.scripts]
+sekretariat-dprd = "sekretariat_app.main:main"
+tpp-finger-scan = "tpp_finger_scan.main:main"
+tpp-finger-cli = "tpp_finger_scan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tpp_finger_scan = ["resources/*.qss", "resources/*.xlsx"]
+sekretariat_app = [
+  "resources/*.qss",
+  "resources/*.ico",
+  "resources/*.png",
+  "sips/resources/templates/*.docx",
+  "sips/resources/data/*.xlsx",
+]
