@@ -3,24 +3,21 @@ from __future__ import annotations
 import ctypes
 import os
 import re
-import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-import fitz
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PySide6.QtCore import QDate, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
-    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -58,9 +55,9 @@ from sekretariat_app.sips.models import (
     day_name_id,
     format_date_id,
 )
-from sekretariat_app.sips.preview import DocxPreviewConverter
 from sekretariat_app.sips.repository import SIPSRepository
 from sekretariat_app.sips.service import SIPSService
+from sekretariat_app.ui.live_preview import LiveDocumentPreview
 
 
 def _date_edit(value: date | None = None) -> QDateEdit:
@@ -108,50 +105,6 @@ def _print_to(path: str | Path, printer_name: str) -> None:
     )
     if result <= 32:
         raise OSError(f"Windows gagal mengirim dokumen ke printer (kode {result}).")
-
-
-def _preview_generated_document(parent: QWidget, generator) -> None:
-    """Buat pratinjau dan pertahankan DOCX jika konverter PDF tidak tersedia."""
-
-    temporary = tempfile.TemporaryDirectory(prefix="sips-preview-")
-    keep_temporary = False
-    files: list[Path] = []
-    try:
-        files = generator(temporary.name)
-        if not files:
-            raise ValueError("Tidak ada dokumen yang dapat dipratinjau.")
-        source = files[0]
-        if len(files) > 1:
-            selected, accepted = QInputDialog.getItem(
-                parent,
-                "Pilih dokumen",
-                "Dokumen yang akan dipratinjau:",
-                [path.name for path in files],
-                0,
-                False,
-            )
-            if not accepted:
-                return
-            source = next(path for path in files if path.name == selected)
-        pdf = DocxPreviewConverter().convert(source, temporary.name)
-        DocumentPreviewDialog(pdf, source, parent).exec()
-    except Exception as exc:
-        if files:
-            # Word membuka file secara asynchronous. Jangan hapus file
-            # sementara sebelum aplikasi Word selesai membacanya.
-            keep_temporary = True
-            _open_path(files[0])
-            QMessageBox.information(
-                parent,
-                "Pratinjau dibuka di Word",
-                "Pratinjau internal tidak tersedia. Dokumen sementara dibuka "
-                f"menggunakan aplikasi Word bawaan.\n\nDetail: {exc}",
-            )
-        else:
-            QMessageBox.warning(parent, "Pratinjau gagal", str(exc))
-    finally:
-        if not keep_temporary:
-            temporary.cleanup()
 
 
 class PersonnelCheckList(QWidget):
@@ -270,59 +223,6 @@ class PersonnelCheckList(QWidget):
             item.setCheckState(0, Qt.CheckState.Unchecked)
 
 
-class DocumentPreviewDialog(QDialog):
-    def __init__(self, pdf_path: Path, source_path: Path, parent=None):
-        super().__init__(parent)
-        self.document = fitz.open(pdf_path)
-        self.source_path = source_path
-        self.page_index = 0
-        self.setWindowTitle(f"Pratinjau · {source_path.name}")
-        self.resize(960, 820)
-        layout = QVBoxLayout(self)
-        self.image = QLabel()
-        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.image)
-        layout.addWidget(scroll, 1)
-        row = QHBoxLayout()
-        self.previous = QPushButton("Halaman Sebelumnya")
-        self.next = QPushButton("Halaman Berikutnya")
-        self.counter = QLabel()
-        open_word = QPushButton("Buka di Word")
-        self.previous.clicked.connect(lambda: self._move(-1))
-        self.next.clicked.connect(lambda: self._move(1))
-        open_word.clicked.connect(lambda: _open_path(self.source_path))
-        row.addWidget(self.previous)
-        row.addWidget(self.next)
-        row.addWidget(self.counter)
-        row.addStretch()
-        row.addWidget(open_word)
-        close = QPushButton("Tutup")
-        close.clicked.connect(self.accept)
-        row.addWidget(close)
-        layout.addLayout(row)
-        self._render()
-
-    def _move(self, delta: int) -> None:
-        self.page_index = max(0, min(len(self.document) - 1, self.page_index + delta))
-        self._render()
-
-    def _render(self) -> None:
-        page = self.document[self.page_index]
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.45, 1.45), alpha=False)
-        image = QPixmap()
-        image.loadFromData(pixmap.tobytes("png"))
-        self.image.setPixmap(image)
-        self.counter.setText(f"Halaman {self.page_index + 1} dari {len(self.document)}")
-        self.previous.setEnabled(self.page_index > 0)
-        self.next.setEnabled(self.page_index < len(self.document) - 1)
-
-    def closeEvent(self, event) -> None:
-        self.document.close()
-        super().closeEvent(event)
-
-
 class TravelPage(QWidget):
     changed = Signal()
 
@@ -357,6 +257,7 @@ class TravelPage(QWidget):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
+        workspace = QSplitter(Qt.Orientation.Horizontal)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
@@ -394,7 +295,16 @@ class TravelPage(QWidget):
         splitter.addWidget(personnel_card)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, 1)
+        splitter.setChildrenCollapsible(False)
+        workspace.addWidget(splitter)
+
+        self.live_preview = LiveDocumentPreview()
+        workspace.addWidget(self.live_preview)
+        workspace.setStretchFactor(0, 5)
+        workspace.setStretchFactor(1, 3)
+        workspace.setChildrenCollapsible(False)
+        workspace.setSizes((760, 440))
+        layout.addWidget(workspace, 1)
 
         actions = QHBoxLayout()
         self.state_label = QLabel("Formulir baru")
@@ -402,18 +312,16 @@ class TravelPage(QWidget):
         actions.addWidget(self.state_label, 1)
         reset = QPushButton("Formulir Baru")
         draft = QPushButton("Simpan Draft")
-        preview = QPushButton("Pratinjau")
         generate = QPushButton("Buat Semua Dokumen")
         generate.setObjectName("PrimaryButton")
         reset.clicked.connect(self.reset_form)
         draft.clicked.connect(self.save_draft)
-        preview.clicked.connect(self.preview)
         generate.clicked.connect(self.generate)
         actions.addWidget(reset)
         actions.addWidget(draft)
-        actions.addWidget(preview)
         actions.addWidget(generate)
         layout.addLayout(actions)
+        self._connect_live_preview_signals()
 
     @staticmethod
     def _card(title: str) -> tuple[QFrame, QGridLayout]:
@@ -529,6 +437,44 @@ class TravelPage(QWidget):
             layout.itemAtPosition(1, 0).widget().setVisible(False)
         return card
 
+    def _connect_live_preview_signals(self) -> None:
+        for field in self.number_fields.values():
+            field.textChanged.connect(self._schedule_live_preview)
+        for field in (
+            self.basis_dprd,
+            self.basis_asn,
+            self.subject,
+            self.notice_subject,
+        ):
+            field.textChanged.connect(self._schedule_live_preview)
+        for combo in (self.travel_type, self.signer_dprd, self.signer_asn):
+            combo.currentTextChanged.connect(self._schedule_live_preview)
+        for calendar in (self.letter_date, self.start_date, self.end_date):
+            calendar.dateChanged.connect(self._schedule_live_preview)
+        destination_model = self.destinations.model()
+        destination_model.rowsInserted.connect(self._schedule_live_preview)
+        destination_model.rowsRemoved.connect(self._schedule_live_preview)
+        destination_model.dataChanged.connect(self._schedule_live_preview)
+        for listing in (
+            self.dprd_list,
+            self.asn_list,
+            self.executor_list,
+            self.companion_list,
+        ):
+            if listing:
+                listing.tree.itemChanged.connect(self._schedule_live_preview)
+
+    def _schedule_live_preview(self, *_args) -> None:
+        data = self.collect()
+        try:
+            data.validate()
+        except ValueError as exc:
+            self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
+            return
+        self.live_preview.schedule(
+            lambda output, current=data: self.service.generate_travel(current, output)
+        )
+
     def _add_destination(self) -> None:
         value = self.destination_input.text().strip()
         if value:
@@ -615,13 +561,6 @@ class TravelPage(QWidget):
         )
         _open_path(output)
 
-    def preview(self) -> None:
-        data = self.collect()
-        _preview_generated_document(
-            self,
-            lambda output: self.service.generate_travel(data, output),
-        )
-
     def load_record(self, record_id: str) -> None:
         record = self.repository.get(record_id)
         if not record or not record.record_type.startswith("travel_"):
@@ -706,6 +645,7 @@ class InvitationPage(QWidget):
         subtitle.setObjectName("Subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
+        workspace = QSplitter(Qt.Orientation.Horizontal)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         host = QWidget()
@@ -797,22 +737,62 @@ class InvitationPage(QWidget):
         form.addWidget(support, row + 1, 0, 1, 2)
         form.setColumnStretch(1, 1)
         scroll.setWidget(host)
-        layout.addWidget(scroll, 1)
+        workspace.addWidget(scroll)
+        self.live_preview = LiveDocumentPreview()
+        workspace.addWidget(self.live_preview)
+        workspace.setStretchFactor(0, 5)
+        workspace.setStretchFactor(1, 3)
+        workspace.setChildrenCollapsible(False)
+        workspace.setSizes((760, 440))
+        layout.addWidget(workspace, 1)
         actions = QHBoxLayout()
         self.state_label = QLabel("Formulir baru")
         actions.addWidget(self.state_label, 1)
         reset = QPushButton("Formulir Baru")
         draft = QPushButton("Simpan Draft")
-        preview = QPushButton("Pratinjau")
         generate = QPushButton("Buat Dokumen")
         generate.setObjectName("PrimaryButton")
         reset.clicked.connect(self.reset_form)
         draft.clicked.connect(self.save_draft)
-        preview.clicked.connect(self.preview)
         generate.clicked.connect(self.generate)
-        for button in (reset, draft, preview, generate):
+        for button in (reset, draft, generate):
             actions.addWidget(button)
         layout.addLayout(actions)
+        self._connect_live_preview_signals()
+
+    def _connect_live_preview_signals(self) -> None:
+        self.number.textChanged.connect(self._schedule_live_preview)
+        self.time_text.textChanged.connect(self._schedule_live_preview)
+        self.agenda.textChanged.connect(self._schedule_live_preview)
+        self.letter_date.dateChanged.connect(self._schedule_live_preview)
+        self.meeting_date.dateChanged.connect(self._schedule_live_preview)
+        self.signer.currentTextChanged.connect(self._schedule_live_preview)
+        for checkbox in (
+            self.include_note,
+            self.include_attendance,
+            self.include_related,
+            self.include_secretariat,
+        ):
+            checkbox.toggled.connect(self._schedule_live_preview)
+        if self.clothing:
+            self.clothing.currentTextChanged.connect(self._schedule_live_preview)
+            self.scenarios.textChanged.connect(self._schedule_live_preview)
+        else:
+            self.meeting_executor.currentTextChanged.connect(self._schedule_live_preview)
+            self.meeting_type.currentTextChanged.connect(self._schedule_live_preview)
+            self.related_parties.textChanged.connect(self._schedule_live_preview)
+            self.other_pages.textChanged.connect(self._schedule_live_preview)
+
+    def _schedule_live_preview(self, *_args) -> None:
+        data = self.collect()
+        try:
+            data.validate()
+        except ValueError as exc:
+            self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
+            return
+        self.live_preview.schedule(
+            lambda output, current=data: self.service.generate_invitation(current, output)
+        )
 
     def _parse_pages(self) -> list[list[str]]:
         if not self.other_pages:
@@ -895,13 +875,6 @@ class InvitationPage(QWidget):
         self.audit.log(self.user.username, "sips_generate_invitation", f"{data.invitation_type} · {data.number}")
         QMessageBox.information(self, "Dokumen selesai dibuat", f"Berhasil membuat {len(files)} file di:\n{output}")
         _open_path(output)
-
-    def preview(self) -> None:
-        data = self.collect()
-        _preview_generated_document(
-            self,
-            lambda output: self.service.generate_invitation(data, output),
-        )
 
     def load_record(self, record_id: str) -> None:
         record = self.repository.get(record_id)

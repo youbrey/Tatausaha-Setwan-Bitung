@@ -200,6 +200,38 @@ class SIPSMigrationTests(unittest.TestCase):
         self.assertNotIn("ModuleWorkspacePage(", shell_source)
         self.assertNotIn("= RecapPage(", shell_source)
 
+    def test_travel_and_invitation_pages_use_automatic_live_preview(self) -> None:
+        page_source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "sekretariat_app"
+            / "ui"
+            / "pages"
+            / "sips.py"
+        ).read_text(encoding="utf-8")
+        preview_source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "sekretariat_app"
+            / "ui"
+            / "live_preview.py"
+        ).read_text(encoding="utf-8")
+        converter_source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "sekretariat_app"
+            / "sips"
+            / "preview.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(page_source.count("self.live_preview = LiveDocumentPreview()"), 2)
+        self.assertEqual(page_source.count("def _schedule_live_preview"), 2)
+        self.assertNotIn('QPushButton("Pratinjau")', page_source)
+        self.assertIn("class _LivePreviewWorker(QThread)", preview_source)
+        self.assertIn("self._timer.setInterval(900)", preview_source)
+        self.assertIn("$word.Visible=$false;$word.DisplayAlerts=0", converter_source)
+        self.assertIn('"}finally{"', converter_source)
+
 
 if __name__ == "__main__":
     unittest.main()

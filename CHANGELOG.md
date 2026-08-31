@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 — 2026-08-31
+
+- Menambahkan layout khusus tiga panel pada Perjalanan Dinas dan Surat
+  Undangan: Sidebar, halaman formulir utama, dan Live Preview di sisi kanan.
+- Mengganti tombol Pratinjau manual dengan preview otomatis setelah perubahan
+  form berhenti selama 900 milidetik.
+- Menjalankan pembuatan DOCX dan konversi PDF pada thread terpisah agar UI tetap
+  responsif.
+- Menambahkan pemilih dokumen untuk hasil perjalanan dinas/undangan yang
+  menghasilkan beberapa file, navigasi halaman, zoom, dan buka DOCX di Word.
+- Menunda proses preview pada halaman yang sedang tidak aktif dan mengabaikan
+  hasil proses lama ketika pengguna kembali mengubah form.
+- Menampilkan validasi kelengkapan formulir langsung di panel preview.
+
 ## 0.4.0 — 2026-08-28
 
 - Memigrasikan generator SIPS dari controller CustomTkinter ke service Python

@@ -30,10 +30,37 @@ QLabel#OfflineBadge {
     padding: 6px 12px;
     font-weight: 700;
 }
-QFrame#Card, QFrame#StatCard, QFrame#ToolbarCard, QFrame#CanvasCard, QFrame#SidePanel {
+QFrame#Card, QFrame#StatCard, QFrame#ToolbarCard, QFrame#CanvasCard, QFrame#SidePanel, QFrame#LivePreviewPanel {
     background: #FFFFFF;
     border: 1px solid #E0E7EF;
     border-radius: 11px;
+}
+QLabel#LiveBadge {
+    color: #087443;
+    background: #DDF5E8;
+    border: 1px solid #B7E7CE;
+    border-radius: 10px;
+    padding: 3px 8px;
+    font-size: 7.5pt;
+    font-weight: 800;
+}
+QLabel#PreviewStatus, QLabel#PreviewCounter {
+    color: #66788A;
+    font-size: 8.5pt;
+}
+QScrollArea#PreviewScroll {
+    background: #E8EDF3;
+    border: 1px solid #D5DEE8;
+    border-radius: 8px;
+}
+QScrollArea#PreviewScroll QWidget#qt_scrollarea_viewport {
+    background: #E8EDF3;
+}
+QLabel#PreviewCanvas {
+    color: #718096;
+    background: #FFFFFF;
+    border: 1px solid #CAD4DF;
+    padding: 0;
 }
 QFrame#InsetCard {
     background: #F7FAFC;

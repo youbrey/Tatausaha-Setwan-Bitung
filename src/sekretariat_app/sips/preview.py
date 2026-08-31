@@ -45,15 +45,24 @@ class DocxPreviewConverter:
 
         script = (
             "$ErrorActionPreference='Stop';"
+            "$word=$null;$doc=$null;"
+            "try{"
             "$word=New-Object -ComObject Word.Application;"
-            "$word.Visible=$false;"
-            f"$doc=$word.Documents.Open('{quote(source)}');"
+            "$word.Visible=$false;$word.DisplayAlerts=0;"
+            f"$doc=$word.Documents.Open('{quote(source)}',$false,$true);"
             f"$doc.SaveAs([ref]'{quote(target)}',[ref]17);"
-            "$doc.Close();$word.Quit();"
+            "}finally{"
+            "if($null -ne $doc){try{$doc.Close(0)}catch{};"
+            "try{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($doc)}catch{}};"
+            "if($null -ne $word){try{$word.Quit(0)}catch{};"
+            "try{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($word)}catch{}};"
+            "[GC]::Collect();[GC]::WaitForPendingFinalizers()"
+            "}"
         )
         subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             check=True,
             capture_output=True,
             timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

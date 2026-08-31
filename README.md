@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.4.0 — migrasi generator SIPS ke PySide6**.
+Versi source saat ini: **0.5.0 — Live Preview dokumen SIPS**.
 
 ## Menu aplikasi
 
@@ -96,8 +96,13 @@ menu Perjalanan Dinas dan Surat Undangan bukan lagi placeholder. Kemampuannya:
 - Ekspor rekap perjalanan dinas dan surat undangan ke `.xlsx`.
 - Deteksi printer Windows, buka dokumen/folder hasil, dan kirim dokumen langsung
   ke printer terpilih.
-- Pratinjau multipage menggunakan Microsoft Word atau LibreOffice lokal;
-  jika konversi PDF tidak tersedia, dokumen otomatis dibuka di Word.
+- Layout tiga panel khusus Persuratan SIPS: Sidebar, formulir utama, dan Live
+  Preview di sisi paling kanan.
+- Live Preview diperbarui otomatis tanpa tombol Pratinjau, dengan debounce agar
+  dokumen tidak dibuat ulang pada setiap karakter yang sedang diketik.
+- Pemilih hasil dokumen, preview multipage, navigasi halaman, zoom, dan tombol
+  membuka DOCX di Word. Konversi lokal menggunakan Microsoft Word atau
+  LibreOffice.
 - Statistik perjalanan, undangan, dan draft pada Dashboard.
 
 Seluruh 21 template Word dan master personel telah menjadi resource paket
