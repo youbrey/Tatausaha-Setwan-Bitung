@@ -10,7 +10,7 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from PySide6.QtCore import QDate, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QDate, QSignalBlocker, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
@@ -44,10 +44,12 @@ from PySide6.QtWidgets import (
 
 from sekretariat_app.auth import User, UserRepository
 from sekretariat_app.sips.constants import (
+    AKD_LAINNYA_DISPLAY_NAMES,
     DEFAULT_TRAVEL_DESTINATIONS,
     JENIS_PERJALANAN_DPRD,
     JENIS_PERJALANAN_SETWAN,
     JENIS_RAPAT_OPTIONS,
+    KATEGORI_DPRD_ORDER,
     PELAKSANA_RAPAT_CUSTOM,
     PELAKSANA_RAPAT_OPTIONS,
 )
@@ -115,13 +117,43 @@ class PersonnelCheckList(QWidget):
         super().__init__()
         self.rows = rows
         self.grouped = grouped
+        self.category_buttons: dict[str, QPushButton] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        header_row = QHBoxLayout()
         header = QLabel(title)
         header.setObjectName("SectionTitle")
-        layout.addWidget(header)
+        self.selection_summary = QLabel()
+        self.selection_summary.setObjectName("MutedText")
+        header_row.addWidget(header)
+        header_row.addStretch()
+        header_row.addWidget(self.selection_summary)
+        layout.addLayout(header_row)
+        if self.grouped:
+            category_host = QWidget()
+            category_grid = QGridLayout(category_host)
+            category_grid.setContentsMargins(0, 2, 0, 4)
+            category_grid.setHorizontalSpacing(6)
+            category_grid.setVerticalSpacing(6)
+            for index, category in enumerate(self._category_order()):
+                button = QPushButton(AKD_LAINNYA_DISPLAY_NAMES.get(category, category))
+                button.setCheckable(True)
+                button.setProperty("categoryChip", True)
+                button.setChecked(category == "Pimpinan DPRD")
+                button.toggled.connect(
+                    lambda checked, selected_category=category: self._category_toggled(
+                        selected_category, checked,
+                    )
+                )
+                row, column = divmod(index, 3)
+                category_grid.addWidget(button, row, column)
+                self.category_buttons[category] = button
+            layout.addWidget(category_host)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Cari nama, jabatan, atau kategori…")
+        self.search.setPlaceholderText(
+            "Cari nama atau jabatan pada kategori terpilih…"
+            if self.grouped else "Cari nama atau jabatan…"
+        )
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         layout.addWidget(self.search)
@@ -142,20 +174,32 @@ class PersonnelCheckList(QWidget):
         layout.addWidget(self.tree, 1)
         self._populate()
 
+        self.tree.itemChanged.connect(self._update_selection_summary)
+        self._update_selection_summary()
+
+    def _category_order(self) -> list[str]:
+        available = {
+            str(row.get("kategori", "Lainnya") or "Lainnya")
+            for row in self.rows
+        }
+        ordered = [category for category in KATEGORI_DPRD_ORDER if category in available]
+        ordered.extend(sorted(available.difference(ordered), key=str.casefold))
+        return ordered
+
     def _populate(self) -> None:
         self.tree.clear()
         if self.grouped:
             groups: dict[str, QTreeWidgetItem] = {}
+            for category in self._category_order():
+                parent = QTreeWidgetItem((AKD_LAINNYA_DISPLAY_NAMES.get(category, category), ""))
+                parent.setFirstColumnSpanned(True)
+                parent.setData(0, Qt.ItemDataRole.UserRole, category)
+                parent.setFlags(parent.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                self.tree.addTopLevelItem(parent)
+                groups[category] = parent
             for row in self.rows:
                 category = row.get("kategori", "Lainnya") or "Lainnya"
-                parent = groups.get(category)
-                if parent is None:
-                    parent = QTreeWidgetItem((category, ""))
-                    parent.setFirstColumnSpanned(True)
-                    parent.setFlags(parent.flags() | Qt.ItemFlag.ItemIsAutoTristate | Qt.ItemFlag.ItemIsUserCheckable)
-                    parent.setCheckState(0, Qt.CheckState.Unchecked)
-                    self.tree.addTopLevelItem(parent)
-                    groups[category] = parent
+                parent = groups[category]
                 item = QTreeWidgetItem((row.get("nama", ""), row.get("jabatan", "")))
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.CheckState.Unchecked)
@@ -172,6 +216,7 @@ class PersonnelCheckList(QWidget):
                 item.setCheckState(0, Qt.CheckState.Unchecked)
                 item.setData(0, Qt.ItemDataRole.UserRole, row)
                 self.tree.addTopLevelItem(item)
+        self._apply_filters()
 
     def _iter_people(self):
         for index in range(self.tree.topLevelItemCount()):
@@ -183,21 +228,52 @@ class PersonnelCheckList(QWidget):
                 yield top
 
     def _filter(self, text: str) -> None:
-        query = text.strip().casefold()
+        self._apply_filters(text)
+
+    def _apply_filters(self, text: str | None = None) -> None:
+        query = (self.search.text() if text is None else text).strip().casefold()
+        active_categories = {
+            category for category, button in self.category_buttons.items()
+            if button.isChecked()
+        }
         for index in range(self.tree.topLevelItemCount()):
             top = self.tree.topLevelItem(index)
             if self.grouped:
+                category = str(top.data(0, Qt.ItemDataRole.UserRole) or "")
+                category_active = category in active_categories
                 visible = False
                 for child_index in range(top.childCount()):
                     child = top.child(child_index)
                     row = child.data(0, Qt.ItemDataRole.UserRole) or {}
-                    match = not query or query in " ".join(str(value) for value in row.values()).casefold()
+                    match = category_active and (
+                        not query or query in " ".join(str(value) for value in row.values()).casefold()
+                    )
                     child.setHidden(not match)
                     visible = visible or match
-                top.setHidden(not visible)
+                top.setHidden(not category_active or not visible)
             else:
                 row = top.data(0, Qt.ItemDataRole.UserRole) or {}
                 top.setHidden(bool(query) and query not in " ".join(str(value) for value in row.values()).casefold())
+
+    def _category_toggled(self, category: str, checked: bool) -> None:
+        if not checked:
+            for index in range(self.tree.topLevelItemCount()):
+                top = self.tree.topLevelItem(index)
+                if top.data(0, Qt.ItemDataRole.UserRole) != category:
+                    continue
+                for child_index in range(top.childCount()):
+                    top.child(child_index).setCheckState(0, Qt.CheckState.Unchecked)
+                break
+        self._apply_filters()
+        self._update_selection_summary()
+
+    def _update_selection_summary(self, *_args) -> None:
+        count = sum(
+            item.checkState(0) == Qt.CheckState.Checked
+            for item in self._iter_people()
+        )
+        label = "DPRD" if self.grouped else "orang"
+        self.selection_summary.setText(f"{count} {label} terpilih")
 
     def selected(self) -> list[dict[str, str]]:
         return [
@@ -211,19 +287,37 @@ class PersonnelCheckList(QWidget):
             (str(row.get("nama", "")), str(row.get("kategori", "")))
             for row in rows
         }
+        if self.grouped:
+            selected_categories = {category for _name, category in wanted if category}
+            if not selected_categories and "Pimpinan DPRD" in self.category_buttons:
+                selected_categories = {"Pimpinan DPRD"}
+            blockers = [QSignalBlocker(button) for button in self.category_buttons.values()]
+            for category, button in self.category_buttons.items():
+                button.setChecked(category in selected_categories)
+            del blockers
         for item in self._iter_people():
             row = item.data(0, Qt.ItemDataRole.UserRole) or {}
             key = (str(row.get("nama", "")), str(row.get("kategori", "")))
             item.setCheckState(0, Qt.CheckState.Checked if key in wanted else Qt.CheckState.Unchecked)
+        self._apply_filters()
+        self._update_selection_summary()
 
     def select_visible(self) -> None:
         for item in self._iter_people():
-            if not item.isHidden():
+            parent = item.parent()
+            if not item.isHidden() and (parent is None or not parent.isHidden()):
                 item.setCheckState(0, Qt.CheckState.Checked)
 
-    def clear(self) -> None:
+    def clear(self, reset_categories: bool = False) -> None:
         for item in self._iter_people():
             item.setCheckState(0, Qt.CheckState.Unchecked)
+        if reset_categories and self.grouped:
+            blockers = [QSignalBlocker(button) for button in self.category_buttons.values()]
+            for category, button in self.category_buttons.items():
+                button.setChecked(category == "Pimpinan DPRD")
+            del blockers
+            self._apply_filters()
+        self._update_selection_summary()
 
 
 class TravelPage(QWidget):
@@ -283,7 +377,7 @@ class TravelPage(QWidget):
         personnel_layout.setContentsMargins(16, 16, 16, 16)
         tabs = QTabWidget()
         if self.mode == "dprd":
-            self.dprd_list = PersonnelCheckList(self.service.master.dprd, True, "Anggota DPRD")
+            self.dprd_list = PersonnelCheckList(self.service.master.dprd, True, "Pelaksana DPRD")
             self.asn_list = PersonnelCheckList(self.service.master.asn, False, "Pendamping ASN")
             tabs.addTab(self.dprd_list, "Anggota DPRD")
             tabs.addTab(self.asn_list, "Pendamping ASN")
@@ -652,7 +746,7 @@ class TravelPage(QWidget):
             self.travel_type.setCurrentIndex(0)
             for listing in (self.dprd_list, self.asn_list, self.executor_list, self.companion_list):
                 if listing:
-                    listing.clear()
+                    listing.clear(reset_categories=True)
             self.state_label.setText("Formulir baru")
             self._update_duration()
 

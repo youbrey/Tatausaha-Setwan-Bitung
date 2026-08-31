@@ -59,6 +59,7 @@ from sekretariat_app.sips.text_utils import (
     detect_zona_waktu,
     extract_city_name,
     format_jabatan_penandatanganan,
+    format_signature_position,
     generate_periods,
     increment_nomor,
     increment_nomor_paripurna,
@@ -113,6 +114,8 @@ class SIPSService:
         duration = inclusive_days(data.start_date, data.end_date)
         signer_dprd_position, signer_dprd_name = _split_signer(data.signer_dprd, "KETUA")
         signer_asn_position, signer_asn_name = _split_signer(data.signer_asn, "SEKRETARIS DPRD")
+        signer_dprd_formatted = format_signature_position(signer_dprd_position)
+        signer_asn_formatted = format_signature_position(signer_asn_position)
         destination_text = " / ".join(data.destinations)
         city_names = [extract_city_name(destination) for destination in data.destinations]
         transport = "Pesawat / Mobil / Kereta" if any(
@@ -144,9 +147,9 @@ class SIPSService:
             "tanggal_akhir": format_date_id(data.end_date),
             "jumlah_angka": duration,
             "jumlah_teks": terbilang_small(duration),
-            "jabatan_ttd": signer_dprd_position,
+            "jabatan_ttd": signer_dprd_formatted,
             "nama_ttd": signer_dprd_name,
-            "jabatan_ttd_asn": signer_asn_position,
+            "jabatan_ttd_asn": signer_asn_formatted,
             "nama_ttd_asn": signer_asn_name,
             "transportasi_otomatis": transport,
             "tanggal_surat_info": format_date_id(data.letter_date),
@@ -163,7 +166,7 @@ class SIPSService:
             "jlh_pelaksana_asn": len(data.asn if data.mode == "dprd" else data.executors),
             "jlh_pelaksana": len(data.executors),
             "jlh_pendamping": len(data.companions),
-            "jabatan_ttd_info": signer_dprd_position,
+            "jabatan_ttd_info": signer_dprd_formatted,
             "nama_ttd_info": signer_dprd_name,
             "pelaksana_dprd": data.dprd,
             "pelaksana_asn": data.asn,

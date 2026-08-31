@@ -4,12 +4,19 @@ depan & belakang, satu dokumen per orang yang kemudian digabung jadi satu
 file multi-halaman per kelompok (DPRD/ASN).
 """
 import os
+import re
 import shutil
 import tempfile
 
 from docxtpl import DocxTemplate
 
-from sekretariat_app.sips.text_utils import extract_city_name, increment_nomor_spd, is_in_jabodetabek
+from sekretariat_app.sips.text_utils import (
+    extract_city_name,
+    increment_nomor_spd,
+    is_in_jabodetabek,
+    join_indonesian,
+    strip_jenis_perjalanan_prefix,
+)
 from sekretariat_app.sips.docx_utils import _combine_word_pages
 
 
@@ -18,11 +25,15 @@ def _build_person_sppd_context(ctx, person, nomor_spd_str, destinations, transpo
     p_ctx["pelaksana_dprd_sppd"] = person.get('nama', '-')
     p_ctx["jabatan_pelaksana_sppd"] = person.get('jabatan', '-')
     p_ctx["nomor_surat_sppd"] = nomor_spd_str
-    p_ctx["jenis_perjalanan_sppd"] = ctx.get("jenis_perjalanan", "")
+    travel_type = ctx.get("jenis_perjalanan", "").strip()
+    destination_text = join_indonesian(destinations)
+    p_ctx["jenis_perjalanan_sppd"] = (
+        f"{travel_type} ke {destination_text}" if destination_text else travel_type
+    )
     p_ctx["transportasi_sppd"] = transport
 
     city_names = [extract_city_name(d) for d in destinations]
-    p_ctx["tujuan_bertugas_sppd"] = ", ".join(city_names)
+    p_ctx["tujuan_bertugas_sppd"] = join_indonesian(city_names)
 
     if any(is_in_jabodetabek(c) for c in city_names):
         tujuan_awal = "Kota Jakarta"
@@ -32,7 +43,12 @@ def _build_person_sppd_context(ctx, person, nomor_spd_str, destinations, transpo
     p_ctx["tanggal_mulai_sppd"] = ctx.get("tanggal_mulai", "")
     p_ctx["tanggal_akhir_sppd"] = ctx.get("tanggal_akhir", "")
     p_ctx["tanggal_surat_sppd"] = ctx.get("tanggal_surat", "")
-    p_ctx["materi_tugas_sppd"] = ctx.get("materi_tugas", "")
+    subject = strip_jenis_perjalanan_prefix(ctx.get("materi_tugas", ""), travel_type)
+    if re.match(r"^ke\b", subject, flags=re.IGNORECASE):
+        parts = re.split(r"\bdalam\s+rangka\b", subject, maxsplit=1, flags=re.IGNORECASE)
+        if len(parts) == 2:
+            subject = parts[1]
+    p_ctx["materi_tugas_sppd"] = subject.strip().rstrip(".")
     p_ctx["tanggal_mulai_sppd_belakang"] = ctx.get("tanggal_mulai", "")
     p_ctx["tanggal_akhir_sppd_belakang"] = ctx.get("tanggal_akhir", "")
     return p_ctx

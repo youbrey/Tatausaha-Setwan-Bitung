@@ -108,6 +108,25 @@ QPushButton:hover, QToolButton:hover {
     background: #F0F5FA;
     border-color: #9FB2C6;
 }
+QPushButton[categoryChip="true"] {
+    color: #294761;
+    background: #F7F9FC;
+    border: 1px solid #D8E0EA;
+    border-radius: 7px;
+    padding: 6px 9px;
+    font-size: 8.5pt;
+    font-weight: 600;
+}
+QPushButton[categoryChip="true"]:hover {
+    color: #155FC0;
+    background: #EEF5FF;
+    border-color: #9FC3F3;
+}
+QPushButton[categoryChip="true"]:checked {
+    color: #FFFFFF;
+    background: #6C63E8;
+    border-color: #6C63E8;
+}
 QPushButton:disabled, QToolButton:disabled {
     color: #98A2B3;
     background: #F2F4F7;

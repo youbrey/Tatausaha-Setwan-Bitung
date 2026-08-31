@@ -8,11 +8,12 @@ Dokumen ini memetakan logika pembuatan surat pada source lama
 | Context perjalanan dinas | `SIPSService.build_travel_context` | Setara |
 | Surat Tugas DPRD biasa/tabel | `buat_surat_tugas_dprd` | Kode inti identik |
 | Surat Tugas ASN biasa/tabel | `buat_surat_tugas_asn` | Kode inti identik |
-| Pemberitahuan multi-tujuan | `buat_surat_pemberitahuan_multi` | Kode inti identik |
-| SPD depan/belakang DPRD dan ASN | `buat_sppd_dprd`, `buat_sppd_asn` | Kode inti identik |
+| Pemberitahuan multi-tujuan | `buat_surat_pemberitahuan_multi` | Ditingkatkan: pelaksana, jabatan penerima, zona per tujuan, dan reset nomor per halaman |
+| SPD depan/belakang DPRD dan ASN | `buat_sppd_dprd`, `buat_sppd_asn` | Ditingkatkan: seluruh tujuan dan ekstraksi kabupaten/kota |
 | Nomor SPD ASN berurutan | `increment_nomor_spd` | Setara |
 | Transportasi otomatis | `build_travel_context` | Setara |
-| Zona waktu dan periode tiap tujuan | `text_utils` | Kode inti identik |
+| Zona waktu dan periode tiap tujuan | `text_utils` | Resolver offline WIB/WITA/WIT dari nama instansi dan kabupaten/kota |
+| Filter kategori pelaksana DPRD | `PersonnelCheckList` | Multi-pilih kategori; hanya nama kategori aktif yang ditampilkan |
 | Daftar hadir perjalanan | `generate_travel_attendance` | Setara; peserta DPRD diperbaiki sesuai source lama |
 | Undangan Paripurna delapan halaman | `_generate_plenary` | Setara |
 | Nomor Paripurna pada segmen ketiga | `increment_nomor_paripurna` | Setara |

@@ -9,6 +9,8 @@ import tempfile
 
 from docx import Document
 from docxtpl import DocxTemplate
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from sekretariat_app.sips.constants import AKD_LAINNYA_DISPLAY_NAMES, KATEGORI_DPRD_ORDER
 from sekretariat_app.sips.settings import (
@@ -18,7 +20,15 @@ from sekretariat_app.sips.settings import (
     TEMPLATE_ST_ASN_TABEL,
 )
 from sekretariat_app.sips.docx_utils import _combine_word_pages, _fill_table_rows_from_master, cleanup_surat_tugas_biasa
-from sekretariat_app.sips.text_utils import increment_nomor, generate_periods
+from sekretariat_app.sips.text_utils import (
+    detect_zona_waktu,
+    format_notification_opening,
+    format_notification_recipient,
+    format_signature_position,
+    generate_periods,
+    increment_nomor,
+    join_indonesian,
+)
 
 
 def buat_surat_tugas_dprd(ctx, selected_dprd, out_path):
@@ -144,6 +154,73 @@ def apply_pelaksana_dprd_summary_to_ctx(ctx, selected_dprd, max_slots=4):
             ctx[f"jlh_pelaksana_dprd{i}"] = ""
     return ctx
 
+
+def _notification_actor(selected_dprd, selected_asn, label_asn):
+    labels = []
+    for label, _count in compute_pelaksana_dprd_summary(selected_dprd):
+        clean = re.sub(r"\s+DPRD$", "", label, flags=re.IGNORECASE).strip()
+        labels.append(f"{clean} DPRD Kota Bitung")
+    actor = join_indonesian(labels)
+    if selected_asn:
+        asn_actor = f"{label_asn} Sekretariat DPRD Kota Bitung"
+        actor = f"{actor} bersama {asn_actor}" if actor else asn_actor
+    return actor
+
+
+def _iter_document_paragraphs(document):
+    for paragraph in document.paragraphs:
+        yield paragraph
+    visited_cells = set()
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                cell_id = id(cell._tc)
+                if cell_id in visited_cells:
+                    continue
+                visited_cells.add(cell_id)
+                for paragraph in cell.paragraphs:
+                    yield paragraph
+
+
+def _replace_document_text(document, old, new):
+    """Ganti token literal template tanpa merusak format run yang memuatnya."""
+    for paragraph in _iter_document_paragraphs(document):
+        replaced = False
+        for run in paragraph.runs:
+            if old in run.text:
+                run.text = run.text.replace(old, new)
+                replaced = True
+        if replaced or old not in paragraph.text or not paragraph.runs:
+            continue
+        # Fallback untuk token yang terbelah ke beberapa run oleh Word.
+        merged = paragraph.text.replace(old, new)
+        paragraph.runs[0].text = merged
+        for run in paragraph.runs[1:]:
+            run.text = ""
+
+
+def _materialize_notice_list_numbers(document):
+    """Mulai penomoran pelaksana dari 1 pada setiap halaman pemberitahuan."""
+    number = 1
+    for paragraph in document.paragraphs:
+        normalized = re.sub(r"\s+", " ", paragraph.text).strip()
+        if not re.search(r":\s*\d+\s+Orang\b", normalized, flags=re.IGNORECASE):
+            continue
+        p_pr = paragraph._p.get_or_add_pPr()
+        existing = p_pr.find(qn("w:numPr"))
+        if existing is not None:
+            p_pr.remove(existing)
+        num_pr = OxmlElement("w:numPr")
+        num_id = OxmlElement("w:numId")
+        num_id.set(qn("w:val"), "0")
+        num_pr.append(num_id)
+        p_pr.append(num_pr)
+        for run in paragraph.runs:
+            if run.text:
+                run.text = f"{number}. {run.text.lstrip()}"
+                break
+        number += 1
+
 def buat_surat_pemberitahuan_multi(template_path, ctx, selected_dprd, selected_asn, destinations, base_number, out_path, label_asn="Pendamping ASN"):
     """Satu halaman per tujuan/periode, digabung jadi satu dokumen akhir.
 
@@ -171,6 +248,11 @@ def buat_surat_pemberitahuan_multi(template_path, ctx, selected_dprd, selected_a
     apply_pelaksana_dprd_summary_to_ctx(base_ctx, selected_dprd)
     base_ctx["pelaksana_tugas_asn_info"] = label_asn
     base_ctx["jlh_pelaksana_asn"] = len(selected_asn)
+    base_ctx["jabatan_ttd_info"] = format_signature_position(base_ctx.get("jabatan_ttd_info", ""))
+    base_ctx["isi_surat_pemberitahuan"] = format_notification_opening(
+        _notification_actor(selected_dprd, selected_asn, label_asn),
+        base_ctx.get("isi_surat_pemberitahuan", ""),
+    )
 
     tmpdir = tempfile.mkdtemp()
     page_files = []
@@ -179,16 +261,19 @@ def buat_surat_pemberitahuan_multi(template_path, ctx, selected_dprd, selected_a
             nomor_surat = increment_nomor(base_number, idx)
             page_ctx = base_ctx.copy()
             page_ctx["nomor_surat_info"] = nomor_surat
-            page_ctx["tujuan_surat_info"] = period["tujuan"]
+            page_ctx["tujuan_surat_info"] = format_notification_recipient(period["tujuan"])
             page_ctx["hari_info"] = period["hari"]
             page_ctx["tanggal_bertugas_info"] = period["tanggal"]
+            page_ctx["zona"] = detect_zona_waktu(period["tujuan"])
 
             tmp_docx = os.path.join(tmpdir, f"pemberitahuan_{idx}.docx")
             doc_tpl = DocxTemplate(template_path)
             doc_tpl.render(page_ctx)
             doc_tpl.save(tmp_docx)
             doc = Document(tmp_docx)
+            _replace_document_text(doc, "WIB", page_ctx["zona"])
             _remove_empty_pelaksana_lines(doc)
+            _materialize_notice_list_numbers(doc)
             doc.save(tmp_docx)
             page_files.append(tmp_docx)
 

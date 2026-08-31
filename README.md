@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.6.0 — Paritas engine SIPS**.
+Versi source saat ini: **0.7.0 — Pelaksana dan tujuan Perjalanan Dinas**.
 
 ## Menu aplikasi
 
@@ -78,13 +78,19 @@ Form dan generator SIPS telah tersambung langsung ke UI PySide6. Tombol pada
 menu Perjalanan Dinas dan Surat Undangan bukan lagi placeholder. Kemampuannya:
 
 - Perjalanan Dinas DPRD dan Sekretariat DPRD pada form terpisah.
-- Pencarian, centang semua hasil pencarian, dan pilihan anggota DPRD/ASN dari
-  master resmi lokal (100 baris anggota DPRD dan 27 ASN).
+- Filter kategori DPRD berbentuk chip yang dapat dipilih beberapa sekaligus;
+  daftar nama hanya menampilkan kategori aktif, disertai pencarian dan pilihan
+  beberapa nama dari master resmi lokal (100 baris anggota DPRD dan 27 ASN).
 - Surat Tugas DPRD/ASN dengan pilihan template biasa atau tabel secara
   otomatis sesuai jumlah pelaksana.
 - Surat Pemberitahuan, SPD halaman depan dan belakang, serta Daftar Hadir.
-- Beberapa tujuan perjalanan, perhitungan lama perjalanan, zona waktu, dan
-  transportasi otomatis berdasarkan tujuan.
+- Beberapa tujuan perjalanan, deteksi nama kabupaten/kota dari nama instansi,
+  zona waktu WIB/WITA/WIT per tujuan, serta transportasi otomatis.
+- Surat Pemberitahuan menentukan pelaksana dari kategori DPRD yang benar-benar
+  dipilih, melengkapi jabatan penerima (Ketua/Kepala/Sekretaris), dan memulai
+  nomor daftar pelaksana dari 1 pada setiap halaman.
+- SPD menuliskan seluruh tujuan pada maksud perjalanan dan hanya nama wilayah
+  administratif pada kolom tempat tujuan.
 - Undangan Paripurna delapan tujuan sesuai template resmi, hingga tujuh
   skenario rapat, serta penomoran halaman otomatis.
 - Undangan Biasa dengan pelaksana/jenis rapat, jumlah Pihak Terkait tanpa batas,

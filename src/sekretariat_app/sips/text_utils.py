@@ -45,12 +45,12 @@ def detect_zona_waktu(tempat_text):
     """
     if not tempat_text:
         return "WIB"
-    text_lower = tempat_text.lower()
-    for kw in WIT_KEYWORDS:
-        if kw.lower() in text_lower:
+    text_lower = re.sub(r"\s+", " ", str(tempat_text).casefold()).strip()
+    for kw in sorted(WIT_KEYWORDS, key=len, reverse=True):
+        if re.search(rf"(?<!\w){re.escape(kw.casefold())}(?!\w)", text_lower):
             return "WIT"
-    for kw in WITA_KEYWORDS:
-        if kw.lower() in text_lower:
+    for kw in sorted(WITA_KEYWORDS, key=len, reverse=True):
+        if re.search(rf"(?<!\w){re.escape(kw.casefold())}(?!\w)", text_lower):
             return "WITA"
     return "WIB"
 
@@ -124,16 +124,121 @@ def increment_nomor_spd(nomor_base, increment=0):
     except (ValueError, IndexError):
         return nomor_base
 
+_PROVINCE_NAMES = (
+    "Aceh", "Sumatera Utara", "Sumatera Barat", "Riau", "Kepulauan Riau",
+    "Jambi", "Sumatera Selatan", "Kepulauan Bangka Belitung", "Bengkulu",
+    "Lampung", "Banten", "DKI Jakarta", "Jawa Barat", "Jawa Tengah",
+    "DI Yogyakarta", "Jawa Timur", "Bali", "Nusa Tenggara Barat",
+    "Nusa Tenggara Timur", "Kalimantan Barat", "Kalimantan Tengah",
+    "Kalimantan Selatan", "Kalimantan Timur", "Kalimantan Utara",
+    "Sulawesi Utara", "Gorontalo", "Sulawesi Tengah", "Sulawesi Barat",
+    "Sulawesi Selatan", "Sulawesi Tenggara", "Maluku", "Maluku Utara",
+    "Papua Barat", "Papua Barat Daya", "Papua", "Papua Tengah",
+    "Papua Pegunungan", "Papua Selatan",
+)
+
+
 def extract_city_name(text):
-    text = text.strip()
-    match = re.search(r'(Kota|Kabupaten|Provinsi)\s+([\w\s]+)', text)
+    """Ambil nama wilayah administratif dari nama instansi/tujuan bebas.
+
+    Contoh: ``DPRD Kota Manado`` menjadi ``Kota Manado`` dan
+    ``Dinas Sosial Kabupaten Bandung`` menjadi ``Kabupaten Bandung``.
+    Teks provinsi/alamat yang ditulis setelah kabupaten/kota tidak ikut
+    terbawa ke kolom tujuan SPD.
+    """
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" ,;-")
+    match = re.search(r'\b(Kota|Kabupaten|Provinsi)\s+(.+)$', text, flags=re.IGNORECASE)
     if match:
-        return f"{match.group(1)} {match.group(2).strip()}"
-    if "DKI Jakarta" in text:
+        kind = match.group(1).title()
+        name = re.split(
+            r"\s*(?:,|;|/|\s+-\s+|\bProvinsi\b|\bKecamatan\b|\bKelurahan\b|"
+            r"\bDesa\b|\bdalam rangka\b|\buntuk\b|\bpada\b)\s*",
+            match.group(2).strip(),
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,;-")
+        if kind != "Provinsi":
+            for province in sorted(_PROVINCE_NAMES, key=len, reverse=True):
+                suffix = f" {province}".casefold()
+                if name.casefold().endswith(suffix):
+                    name = name[:-len(suffix)].rstrip()
+                    break
+        return f"{kind} {name}" if name else text
+    if "dki jakarta" in text.casefold():
         return "Kota Jakarta"
-    if "Jakarta" in text:
+    if "jakarta" in text.casefold():
         return "Kota Jakarta"
     return text
+
+
+def join_indonesian(values):
+    """Gabungkan daftar dengan tanda baca bahasa Indonesia."""
+    items = [str(value).strip() for value in values if str(value).strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} dan {items[1]}"
+    return f"{', '.join(items[:-1])}, dan {items[-1]}"
+
+
+def format_notification_recipient(destination):
+    """Tentukan jabatan penerima Surat Pemberitahuan dari nama instansi."""
+    clean = re.sub(r"\s+", " ", str(destination or "")).strip(" ,;-")
+    if not clean:
+        return ""
+    upper = clean.upper()
+    if re.match(
+        r"^(KETUA|KEPALA|SEKRETARIS|GUBERNUR|WALI KOTA|WALIKOTA|BUPATI|"
+        r"REKTOR|DIREKTUR|PIMPINAN)\b",
+        upper,
+    ):
+        return upper
+    if upper.startswith("SEKRETARIAT DPRD "):
+        return re.sub(r"^SEKRETARIAT DPRD\b", "SEKRETARIS DPRD", upper)
+    if is_plain_region_name(clean):
+        return f"KETUA DPRD {upper}"
+    if re.search(r"\bDPRD\b", upper):
+        return f"KETUA {upper}"
+    if upper.startswith("SEKRETARIAT DAERAH "):
+        return re.sub(r"^SEKRETARIAT DAERAH\b", "SEKRETARIS DAERAH", upper)
+    if re.match(r"^(DINAS|BADAN|KANTOR|INSPEKTORAT|KECAMATAN)\b", upper):
+        return f"KEPALA {upper}"
+    if re.match(r"^(UNIVERSITAS|INSTITUT|SEKOLAH TINGGI)\b", upper):
+        return f"REKTOR {upper}"
+    if re.match(r"^(RUMAH SAKIT|RSUD|RSUP|PERUMDA|PT\.?\s)\b", upper):
+        return f"DIREKTUR {upper}"
+    return f"PIMPINAN {upper}"
+
+
+def format_notification_opening(actor, subject):
+    """Sisipkan pelaksana tugas ke kalimat pembuka Surat Pemberitahuan."""
+    actor_text = re.sub(r"\s+", " ", str(actor or "")).strip()
+    activity = re.sub(r"\s+", " ", str(subject or "")).strip().rstrip(".")
+    if not activity:
+        return f"{actor_text} akan melaksanakan perjalanan dinas." if actor_text else ""
+    if not actor_text or activity.casefold().startswith("bersama ini"):
+        return f"{activity}."
+    if actor_text.casefold() in activity.casefold():
+        return f"{activity}."
+    if activity.casefold().startswith("akan "):
+        return f"{actor_text} {activity}."
+    activity = re.sub(
+        r"^(Melakukan|Melaksanakan)\b",
+        lambda match: match.group(1).lower(),
+        activity,
+        flags=re.IGNORECASE,
+    )
+    if activity.casefold().startswith(("melakukan ", "melaksanakan ")):
+        return f"{actor_text} akan {activity}."
+    return f"{actor_text} akan melakukan {activity}."
+
+
+def format_signature_position(value):
+    """Format jabatan penandatangan formal: kapital dan diakhiri koma."""
+    clean = re.sub(r"\s+", " ", str(value or "")).strip().upper().rstrip(" ,")
+    return f"{clean}," if clean else ""
 
 def is_plain_region_name(text):
     """True hanya jika SELURUH teks tujuan murni nama wilayah administratif
@@ -157,14 +262,16 @@ def is_plain_region_name(text):
     return False
 
 def is_in_sulawesi_utara(city_name):
+    normalized = str(city_name or "").casefold()
     for c in SULAWESI_UTARA_CITIES:
-        if c in city_name:
+        if c.casefold() in normalized:
             return True
     return False
 
 def is_in_jabodetabek(city_name):
+    normalized = str(city_name or "").casefold()
     for c in JABODETABEK_CITIES:
-        if c in city_name:
+        if c.casefold() in normalized:
             return True
     return False
 
