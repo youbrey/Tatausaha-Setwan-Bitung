@@ -145,6 +145,28 @@ class SIPSRepository:
         if row:
             raise ValueError(f"Nomor surat '{row['number']}' sudah digunakan pada dokumen lain.")
 
+    def find_duplicate_travel_title(
+        self,
+        title: str,
+        record_id: str | None = None,
+    ) -> DocumentRecord | None:
+        """Cari materi perjalanan yang sama setelah kapital/spasi dinormalisasi."""
+        normalized = " ".join(str(title or "").casefold().split())
+        if len(normalized) < 6:
+            return None
+        clauses = ["record_type LIKE 'travel_%'"]
+        parameters: list[str] = []
+        if record_id:
+            clauses.append("id <> ?")
+            parameters.append(record_id)
+        query = "SELECT * FROM sips_documents WHERE " + " AND ".join(clauses) + " ORDER BY updated_at DESC"
+        with self._connect() as database:
+            rows = database.execute(query, parameters).fetchall()
+        for row in rows:
+            if " ".join(str(row["title"] or "").casefold().split()) == normalized:
+                return self._to_record(row)
+        return None
+
     def get(self, record_id: str) -> DocumentRecord | None:
         with self._connect() as database:
             row = database.execute("SELECT * FROM sips_documents WHERE id = ?", (record_id,)).fetchone()

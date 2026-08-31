@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.5.0 — Live Preview dokumen SIPS**.
+Versi source saat ini: **0.6.0 — Paritas engine SIPS**.
 
 ## Menu aplikasi
 
@@ -91,6 +91,14 @@ menu Perjalanan Dinas dan Surat Undangan bukan lagi placeholder. Kemampuannya:
   dan halaman tambahan tujuan surat.
 - Pembuatan opsional Naskah Dinas dan Daftar Hadir rapat, termasuk lembar Pihak
   Terkait, Sekretariat, dan Tenaga Ahli Fraksi.
+- Naskah Dinas dan Daftar Hadir juga dapat dibuat secara mandiri, sama seperti
+  tombol dokumen pendukung pada SIPS lama.
+- Validasi final mengikuti cabang dokumen yang benar-benar dipilih: DPRD,
+  pendamping ASN, pelaksana Setwan, dan/atau pendamping Setwan.
+- Jika satu jenis dokumen gagal, file lain yang berhasil tetap dipertahankan dan
+  aplikasi menampilkan rincian cabang yang gagal.
+- Autocomplete tujuan perjalanan dan peringatan materi perjalanan yang pernah
+  dibuat sebelumnya.
 - Simpan draft, muat/edit formulir dari rekap, pencarian/filter status, dan
   validasi nomor surat ganda tanpa membedakan huruf besar-kecil.
 - Ekspor rekap perjalanan dinas dan surat undangan ke `.xlsx`.
@@ -110,6 +118,9 @@ Seluruh 21 template Word dan master personel telah menjadi resource paket
 CustomTkinter lama. Source SIPS lama tetap disertakan di `legacy/sips_app`
 sebagai arsip pembanding template.
 
+Matriks audit fungsi lama dan penggantinya tersedia di
+`docs/SIPS_ENGINE_PARITY.md`.
+
 ## Menjalankan melalui VS Code di Windows
 
 Prasyarat: Windows 10/11 64-bit, Python 3.11 atau lebih baru, dan VS Code.
@@ -122,15 +133,12 @@ Prasyarat: Windows 10/11 64-bit, Python 3.11 atau lebih baru, dan VS Code.
 4. Setelah selesai, jalankan `run_app.bat` atau tekan `F5` dan pilih
    **Jalankan SIPS Terpadu**.
 
-Akun awal pengembangan:
-
-```text
-Username : admin
-Password : admin123
-```
-
-Segera ubah kata sandi melalui menu **Kelola User**. Kata sandi disimpan sebagai
-hash PBKDF2 dengan salt unik di database SQLite lokal.
+Pada pemasangan baru, aplikasi membuat akun `admin` dengan kata sandi acak.
+Kredensial awal disimpan sementara di file `KREDENSIAL_ADMIN_AWAL.txt` pada
+folder data aplikasi dan ditampilkan lokasinya di halaman login. File tersebut
+dihapus otomatis setelah login pertama berhasil. Segera ubah kata sandi melalui
+menu **Kelola User**. Kata sandi disimpan sebagai hash PBKDF2 dengan salt unik
+di database SQLite lokal.
 
 Jika ingin menjalankan manual melalui PowerShell:
 

@@ -10,13 +10,14 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from PySide6.QtCore import QDate, Qt, QUrl, Signal
+from PySide6.QtCore import QDate, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDateEdit,
     QFileDialog,
     QFrame,
@@ -43,9 +44,11 @@ from PySide6.QtWidgets import (
 
 from sekretariat_app.auth import User, UserRepository
 from sekretariat_app.sips.constants import (
+    DEFAULT_TRAVEL_DESTINATIONS,
     JENIS_PERJALANAN_DPRD,
     JENIS_PERJALANAN_SETWAN,
     JENIS_RAPAT_OPTIONS,
+    PELAKSANA_RAPAT_CUSTOM,
     PELAKSANA_RAPAT_OPTIONS,
 )
 from sekretariat_app.sips.models import (
@@ -385,6 +388,16 @@ class TravelPage(QWidget):
         for index, (label, widget) in enumerate(widgets, start=1):
             layout.addWidget(QLabel(label), index, 0)
             layout.addWidget(widget, index, 1)
+        self.duplicate_title_warning = QLabel()
+        self.duplicate_title_warning.setStyleSheet("color: #B45309; font-weight: 600;")
+        self.duplicate_title_warning.setWordWrap(True)
+        self.duplicate_title_warning.hide()
+        layout.addWidget(self.duplicate_title_warning, len(widgets) + 1, 0, 1, 2)
+        self._duplicate_title_timer = QTimer(self)
+        self._duplicate_title_timer.setSingleShot(True)
+        self._duplicate_title_timer.setInterval(700)
+        self._duplicate_title_timer.timeout.connect(self._check_duplicate_title)
+        self.subject.textChanged.connect(self._duplicate_title_timer.start)
         return card
 
     def _schedule_card(self) -> QFrame:
@@ -407,6 +420,11 @@ class TravelPage(QWidget):
         card, layout = self._card("Tujuan Perjalanan")
         self.destination_input = QLineEdit()
         self.destination_input.setPlaceholderText("Contoh: DPRD Kota Manado atau Kota Bandung")
+        completer = QCompleter(DEFAULT_TRAVEL_DESTINATIONS, self.destination_input)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.destination_input.setCompleter(completer)
         add = QPushButton("Tambah")
         add.clicked.connect(self._add_destination)
         self.destination_input.returnPressed.connect(self._add_destination)
@@ -467,13 +485,27 @@ class TravelPage(QWidget):
     def _schedule_live_preview(self, *_args) -> None:
         data = self.collect()
         try:
-            data.validate()
+            data.validate_preview()
         except ValueError as exc:
             self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
             return
         self.live_preview.schedule(
-            lambda output, current=data: self.service.generate_travel(current, output)
+            lambda output, current=data: self.service.generate_travel(current, output, preview=True)
         )
+
+    def _check_duplicate_title(self) -> None:
+        duplicate = self.repository.find_duplicate_travel_title(
+            self.subject.toPlainText(), self.record_id,
+        )
+        if duplicate is None:
+            self.duplicate_title_warning.clear()
+            self.duplicate_title_warning.hide()
+            return
+        self.duplicate_title_warning.setText(
+            "Materi ini sudah pernah dibuat pada "
+            f"{duplicate.document_date or '-'} oleh {duplicate.author}. Periksa sebelum melanjutkan."
+        )
+        self.duplicate_title_warning.show()
 
     def _add_destination(self) -> None:
         value = self.destination_input.text().strip()
@@ -546,7 +578,10 @@ class TravelPage(QWidget):
             self.repository.validate_numbers(data.document_numbers, self.record_id)
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             QApplication.processEvents()
-            files = self.service.generate_travel(data, output)
+            report = self.service.generate_travel_report(data, output)
+            files = report.files
+            if not files:
+                raise RuntimeError(report.error_message or "Tidak ada dokumen yang berhasil dibuat.")
             self._save(data, "generated", files)
         except Exception as exc:
             QMessageBox.critical(self, "Pembuatan dokumen gagal", str(exc))
@@ -554,11 +589,19 @@ class TravelPage(QWidget):
         finally:
             QApplication.restoreOverrideCursor()
         self.audit.log(self.user.username, "sips_generate_travel", f"{len(files)} file · {data.subject}")
-        QMessageBox.information(
-            self,
-            "Dokumen selesai dibuat",
-            f"Berhasil membuat {len(files)} file di:\n{output}",
-        )
+        if report.failures:
+            QMessageBox.warning(
+                self,
+                "Sebagian dokumen gagal dibuat",
+                f"Berhasil membuat {len(files)} file di:\n{output}\n\n"
+                f"Dokumen yang gagal:\n{report.error_message}",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Dokumen selesai dibuat",
+                f"Berhasil membuat {len(files)} file di:\n{output}",
+            )
         _open_path(output)
 
     def load_record(self, record_id: str) -> None:
@@ -695,6 +738,7 @@ class InvitationPage(QWidget):
             self.meeting_executor = QComboBox()
             self.meeting_executor.setEditable(True)
             self.meeting_executor.addItems(PELAKSANA_RAPAT_OPTIONS)
+            self.meeting_executor.activated.connect(self._on_meeting_executor_selected)
             self.meeting_type = QComboBox()
             self.meeting_type.setEditable(True)
             self.meeting_type.addItems(JENIS_RAPAT_OPTIONS)
@@ -734,6 +778,14 @@ class InvitationPage(QWidget):
         else:
             self.include_related.setVisible(False)
             self.include_secretariat.setVisible(False)
+        support_actions = QHBoxLayout()
+        create_note = QPushButton("Buat Naskah Dinas Saja")
+        create_attendance = QPushButton("Buat Daftar Hadir Saja")
+        create_note.clicked.connect(lambda: self._generate_support_document("note"))
+        create_attendance.clicked.connect(lambda: self._generate_support_document("attendance"))
+        support_actions.addWidget(create_note)
+        support_actions.addWidget(create_attendance)
+        support_layout.addLayout(support_actions)
         form.addWidget(support, row + 1, 0, 1, 2)
         form.setColumnStretch(1, 1)
         scroll.setWidget(host)
@@ -783,16 +835,45 @@ class InvitationPage(QWidget):
             self.related_parties.textChanged.connect(self._schedule_live_preview)
             self.other_pages.textChanged.connect(self._schedule_live_preview)
 
+    def _on_meeting_executor_selected(self, _index: int) -> None:
+        if self.meeting_executor and self.meeting_executor.currentText() == PELAKSANA_RAPAT_CUSTOM:
+            self.meeting_executor.setEditText("")
+            self.meeting_executor.setFocus()
+
     def _schedule_live_preview(self, *_args) -> None:
         data = self.collect()
         try:
-            data.validate()
+            data.validate_preview()
         except ValueError as exc:
             self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
             return
         self.live_preview.schedule(
-            lambda output, current=data: self.service.generate_invitation(current, output)
+            lambda output, current=data: self.service.generate_invitation(current, output, preview=True)
         )
+
+    def _generate_support_document(self, kind: str) -> None:
+        title = "Naskah Dinas" if kind == "note" else "Daftar Hadir"
+        output = QFileDialog.getExistingDirectory(self, f"Pilih folder hasil {title}")
+        if not output:
+            return
+        try:
+            data = self.collect()
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            QApplication.processEvents()
+            if kind == "note":
+                path = self.service.generate_official_note(data, output)
+                action = "sips_generate_official_note"
+            else:
+                path = self.service.generate_meeting_attendance(data, output)
+                action = "sips_generate_meeting_attendance"
+        except Exception as exc:
+            QMessageBox.critical(self, f"Pembuatan {title} gagal", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.audit.log(self.user.username, action, f"{self.invitation_type} · {path.name}")
+        QMessageBox.information(self, f"{title} selesai dibuat", f"File tersimpan di:\n{path}")
+        _open_path(path)
 
     def _parse_pages(self) -> list[list[str]]:
         if not self.other_pages:
@@ -865,7 +946,10 @@ class InvitationPage(QWidget):
             self.repository.validate_numbers({"nomor_undangan": data.number}, self.record_id)
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
             QApplication.processEvents()
-            files = self.service.generate_invitation(data, output)
+            report = self.service.generate_invitation_report(data, output)
+            files = report.files
+            if not files:
+                raise RuntimeError(report.error_message or "Tidak ada dokumen yang berhasil dibuat.")
             self._save(data, "generated", files)
         except Exception as exc:
             QMessageBox.critical(self, "Pembuatan dokumen gagal", str(exc))
@@ -873,7 +957,15 @@ class InvitationPage(QWidget):
         finally:
             QApplication.restoreOverrideCursor()
         self.audit.log(self.user.username, "sips_generate_invitation", f"{data.invitation_type} · {data.number}")
-        QMessageBox.information(self, "Dokumen selesai dibuat", f"Berhasil membuat {len(files)} file di:\n{output}")
+        if report.failures:
+            QMessageBox.warning(
+                self,
+                "Sebagian dokumen gagal dibuat",
+                f"Berhasil membuat {len(files)} file di:\n{output}\n\n"
+                f"Dokumen yang gagal:\n{report.error_message}",
+            )
+        else:
+            QMessageBox.information(self, "Dokumen selesai dibuat", f"Berhasil membuat {len(files)} file di:\n{output}")
         _open_path(output)
 
     def load_record(self, record_id: str) -> None:

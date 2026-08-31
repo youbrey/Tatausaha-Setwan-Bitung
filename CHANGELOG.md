@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — 2026-08-31
+
+- Menyelesaikan audit paritas engine surat terhadap source SIPS lama.
+- Menambahkan validasi final per jenis peserta dan memisahkan validasi ringan
+  untuk Live Preview.
+- Mengembalikan hasil batch parsial beserta rincian kegagalan per dokumen.
+- Mengembalikan pembuatan mandiri Naskah Dinas dan Daftar Hadir rapat.
+- Memulihkan autocomplete tujuan, peringatan materi duplikat, dan perilaku input
+  nama pelaksana rapat custom.
+- Memperbaiki daftar hadir mode DPRD agar hanya berisi anggota DPRD, serta
+  penamaan file Undangan Paripurna berdasarkan tanggal surat seperti SIPS lama.
+- Menambah regression test cabang generator dan pemeriksaan placeholder DOCX.
+- Mengganti kata sandi admin bawaan dengan kredensial acak per instalasi yang
+  disimpan sementara dan dihapus setelah login pertama.
+
 ## 0.5.0 — 2026-08-31
 
 - Menambahkan layout khusus tiga panel pada Perjalanan Dinas dan Surat

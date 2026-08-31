@@ -24,6 +24,7 @@ class UserRepository:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.initial_admin_password_path = self.path.with_name("KREDENSIAL_ADMIN_AWAL.txt")
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -57,13 +58,26 @@ class UserRepository:
             )
             exists = db.execute("SELECT 1 FROM users LIMIT 1").fetchone()
             if not exists:
-                salt, password_hash = self._password_parts("admin123")
+                initial_password = secrets.token_urlsafe(12)
+                salt, password_hash = self._password_parts(initial_password)
                 now = datetime.now().isoformat(timespec="seconds")
                 db.execute(
                     "INSERT INTO users(username, full_name, role, password_hash, salt, active, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
                     ("admin", "Administrator", "superadmin", password_hash, salt, now, now),
                 )
+                self.initial_admin_password_path.write_text(
+                    "KREDENSIAL ADMIN AWAL - SIPS TERPADU\n\n"
+                    "Username: admin\n"
+                    f"Kata sandi: {initial_password}\n\n"
+                    "File ini akan dihapus otomatis setelah login pertama berhasil.\n"
+                    "Segera ubah kata sandi melalui menu Kelola User.\n",
+                    encoding="utf-8",
+                )
+                try:
+                    self.initial_admin_password_path.chmod(0o600)
+                except OSError:
+                    pass
 
     @staticmethod
     def _password_parts(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -83,6 +97,8 @@ class UserRepository:
         if not hmac.compare_digest(candidate, row["password_hash"]):
             return None
         user = self._to_user(row)
+        if user.username.casefold() == "admin" and self.initial_admin_password_path.exists():
+            self.initial_admin_password_path.unlink(missing_ok=True)
         self.log(user.username, "login", "Login berhasil")
         return user
 

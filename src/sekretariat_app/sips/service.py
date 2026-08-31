@@ -3,8 +3,9 @@ from __future__ import annotations
 import shutil
 import tempfile
 from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from docx import Document
 from docxtpl import DocxTemplate, RichText
@@ -77,14 +78,38 @@ def _is_taf(value: str) -> bool:
     return " ".join(value.lower().split()).startswith("tenaga ahli fraksi")
 
 
+@dataclass(frozen=True, slots=True)
+class GenerationFailure:
+    document: str
+    message: str
+
+
+@dataclass(slots=True)
+class GenerationReport:
+    """Hasil pembuatan batch; file yang berhasil tidak dibuang saat satu cabang gagal."""
+
+    files: list[Path] = field(default_factory=list)
+    failures: list[GenerationFailure] = field(default_factory=list)
+
+    @property
+    def error_message(self) -> str:
+        return "\n".join(f"{item.document}: {item.message}" for item in self.failures)
+
+
+class DocumentGenerationError(RuntimeError):
+    def __init__(self, report: GenerationReport) -> None:
+        self.report = report
+        super().__init__(report.error_message or "Pembuatan dokumen gagal.")
+
+
 class SIPSService:
     """Orkestrasi generator SIPS tanpa ketergantungan pada widget UI."""
 
     def __init__(self, master: PersonnelMaster | None = None) -> None:
         self.master = master or PersonnelMaster()
 
-    def build_travel_context(self, data: TravelFormData) -> dict[str, Any]:
-        data.validate()
+    def build_travel_context(self, data: TravelFormData, *, preview: bool = False) -> dict[str, Any]:
+        data.validate_preview() if preview else data.validate()
         duration = inclusive_days(data.start_date, data.end_date)
         signer_dprd_position, signer_dprd_name = _split_signer(data.signer_dprd, "KETUA")
         signer_asn_position, signer_asn_name = _split_signer(data.signer_asn, "SEKRETARIS DPRD")
@@ -146,11 +171,50 @@ class SIPSService:
             "pendamping_list": data.companions,
         }
 
-    def generate_travel(self, data: TravelFormData, output_directory: str | Path) -> list[Path]:
-        context = self.build_travel_context(data)
+    @staticmethod
+    def _run_generation(
+        report: GenerationReport,
+        label: str,
+        expected_files: Iterable[Path],
+        callback: Callable[[], None],
+    ) -> None:
+        expected = list(expected_files)
+        before = {
+            path: (path.stat().st_mtime_ns, path.stat().st_size)
+            for path in expected
+            if path.exists()
+        }
+        failed = False
+        try:
+            callback()
+        except Exception as exc:
+            failed = True
+            report.failures.append(GenerationFailure(label, str(exc)))
+        produced: list[Path] = []
+        for path in expected:
+            if not path.exists():
+                continue
+            after = (path.stat().st_mtime_ns, path.stat().st_size)
+            if not failed or path not in before or before[path] != after:
+                produced.append(path)
+                if path not in report.files:
+                    report.files.append(path)
+        if not produced and not failed and not any(
+            failure.document == label for failure in report.failures
+        ):
+            report.failures.append(GenerationFailure(label, "Generator tidak menghasilkan file."))
+
+    def generate_travel_report(
+        self,
+        data: TravelFormData,
+        output_directory: str | Path,
+        *,
+        preview: bool = False,
+    ) -> GenerationReport:
+        context = self.build_travel_context(data, preview=preview)
         target = Path(output_directory)
         target.mkdir(parents=True, exist_ok=True)
-        generated: list[Path] = []
+        report = GenerationReport()
 
         def output(label: str) -> Path:
             mode = "dprd" if data.mode == "dprd" else "setwan"
@@ -161,29 +225,47 @@ class SIPSService:
         if data.mode == "dprd":
             if data.dprd:
                 path = output("surat-tugas")
-                buat_surat_tugas_dprd(context, data.dprd, path)
-                generated.append(path)
+                self._run_generation(
+                    report, "Surat Tugas DPRD", [path],
+                    lambda: buat_surat_tugas_dprd(context, data.dprd, path),
+                )
             if data.asn:
                 path = output("surat-tugas-pendamping")
-                buat_surat_tugas_asn(context, data.asn, path)
-                generated.append(path)
+                self._run_generation(
+                    report, "Surat Tugas Pendamping ASN", [path],
+                    lambda: buat_surat_tugas_asn(context, data.asn, path),
+                )
             if data.dprd or data.asn:
                 path = output("surat-pemberitahuan")
-                buat_surat_pemberitahuan_multi(
-                    TEMPLATE_PEMBERITAHUAN, context, data.dprd, data.asn,
-                    data.destinations, context["nomor_pemberitahuan_dprd"], path,
-                    label_asn="Pendamping ASN",
+                self._run_generation(
+                    report, "Surat Pemberitahuan DPRD", [path],
+                    lambda: buat_surat_pemberitahuan_multi(
+                        TEMPLATE_PEMBERITAHUAN, context, data.dprd, data.asn,
+                        data.destinations, context["nomor_pemberitahuan_dprd"], path,
+                        label_asn="Pendamping ASN",
+                    ),
                 )
-                generated.append(path)
             if data.dprd:
                 front, back = output("spd-depan"), output("spd-belakang")
-                buat_sppd_dprd(TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, context, data.dprd, data.destinations, front, back)
-                generated.extend((front, back))
+                self._run_generation(
+                    report, "SPD DPRD", [front, back],
+                    lambda: buat_sppd_dprd(
+                        TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, context,
+                        data.dprd, data.destinations, front, back,
+                    ),
+                )
             if data.asn:
                 front, back = output("spd-pendamping-depan"), output("spd-pendamping-belakang")
-                buat_sppd_asn(TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, context, data.asn, data.destinations, front, back)
-                generated.extend((front, back))
-            attendance_people = data.dprd or data.asn
+                self._run_generation(
+                    report, "SPD Pendamping ASN", [front, back],
+                    lambda: buat_sppd_asn(
+                        TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, context,
+                        data.asn, data.destinations, front, back,
+                    ),
+                )
+            # Perilaku SIPS lama: daftar hadir mode DPRD hanya berisi anggota
+            # DPRD. Pendamping ASN sudah memiliki Surat Tugas/SPD sendiri.
+            attendance_people = data.dprd
             attendance_mode = "dprd"
         else:
             for people, role, task_label, notice_label, spd_key in (
@@ -196,29 +278,54 @@ class SIPSService:
                 role_context["pelaksana_tugas_asn_info"] = role
                 role_context["jlh_pelaksana_asn"] = len(people)
                 path = output(task_label)
-                buat_surat_tugas_asn(role_context, people, path)
-                generated.append(path)
-                path = output(notice_label)
-                buat_surat_pemberitahuan_multi(
-                    TEMPLATE_PEMBERITAHUAN, role_context, [], people,
-                    data.destinations, context["nomor_pemberitahuan_asn"], path,
-                    label_asn=role,
+                self._run_generation(
+                    report, f"Surat Tugas {role}", [path],
+                    lambda p=path, c=role_context, selected=people: buat_surat_tugas_asn(c, selected, p),
                 )
-                generated.append(path)
+                notice_path = output(notice_label)
+                self._run_generation(
+                    report, f"Surat Pemberitahuan {role}", [notice_path],
+                    lambda p=notice_path, c=role_context, selected=people, role_name=role: buat_surat_pemberitahuan_multi(
+                        TEMPLATE_PEMBERITAHUAN, c, [], selected,
+                        data.destinations, context["nomor_pemberitahuan_asn"], p,
+                        label_asn=role_name,
+                    ),
+                )
                 spd_context = dict(role_context)
                 spd_context["nomor_spd_asn"] = context[spd_key]
                 front = output(f"spd-{slugify_filename(role)}-depan")
                 back = output(f"spd-{slugify_filename(role)}-belakang")
-                buat_sppd_asn(TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, spd_context, people, data.destinations, front, back)
-                generated.extend((front, back))
+                self._run_generation(
+                    report, f"SPD {role}", [front, back],
+                    lambda c=spd_context, selected=people, f=front, b=back: buat_sppd_asn(
+                        TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, c,
+                        selected, data.destinations, f, b,
+                    ),
+                )
             attendance_people = data.executors + data.companions
             attendance_mode = "setwan"
 
         if attendance_people:
             path = output("daftar-hadir")
-            self.generate_travel_attendance(context, attendance_people, data.destinations, attendance_mode, path)
-            generated.append(path)
-        return generated
+            self._run_generation(
+                report, "Daftar Hadir Perjalanan Dinas", [path],
+                lambda: self.generate_travel_attendance(
+                    context, attendance_people, data.destinations, attendance_mode, path,
+                ),
+            )
+        return report
+
+    def generate_travel(
+        self,
+        data: TravelFormData,
+        output_directory: str | Path,
+        *,
+        preview: bool = False,
+    ) -> list[Path]:
+        report = self.generate_travel_report(data, output_directory, preview=preview)
+        if report.failures:
+            raise DocumentGenerationError(report)
+        return report.files
 
     @staticmethod
     def _travel_category_slug(data: TravelFormData) -> str:
@@ -315,34 +422,113 @@ class SIPSService:
         ) if is_plain_region_name(clean_destination) else clean_destination
         return actor_text, institution
 
-    def generate_invitation(self, data: InvitationFormData, output_directory: str | Path) -> list[Path]:
-        data.validate()
+    @staticmethod
+    def _invitation_date_slug(data: InvitationFormData, *, letter_date: bool = False) -> str:
+        selected_date = data.letter_date if letter_date else data.meeting_date
+        return (
+            f"{slugify_filename(day_name_id(selected_date))}-"
+            f"{selected_date.day}-"
+            f"{slugify_filename(format_date_id(selected_date).split()[1])}"
+        )
+
+    def generate_official_note(
+        self,
+        data: InvitationFormData,
+        output_directory: str | Path,
+    ) -> Path:
+        """Buat Naskah Dinas secara mandiri, setara tombol pada SIPS lama."""
+        if data.invitation_type not in {"paripurna", "biasa"}:
+            raise ValueError("Jenis undangan tidak valid.")
+        if not data.number.strip():
+            raise ValueError("Nomor undangan wajib diisi untuk membuat Naskah Dinas.")
+        if not data.agenda.strip():
+            raise ValueError("Isi surat/agenda rapat wajib diisi untuk membuat Naskah Dinas.")
         target = Path(output_directory)
         target.mkdir(parents=True, exist_ok=True)
-        date_slug = f"{slugify_filename(day_name_id(data.meeting_date))}-{data.meeting_date.day}-{slugify_filename(format_date_id(data.meeting_date).split()[1])}"
-        generated: list[Path] = []
+        path = target / (
+            f"naskah-dinas-{'paripurna' if data.invitation_type == 'paripurna' else 'rapat'}-"
+            f"{self._invitation_date_slug(data)}.docx"
+        )
+        generate_naskah_dinas(
+            TEMPLATE_NASKAH_DINAS_RAPAT,
+            path,
+            data.number,
+            format_date_id(data.letter_date),
+            data.agenda,
+        )
+        return path
+
+    def generate_meeting_attendance(
+        self,
+        data: InvitationFormData,
+        output_directory: str | Path,
+    ) -> Path:
+        """Buat Daftar Hadir secara mandiri dengan lembar tambahan terkait."""
+        data.validate_preview()
+        target = Path(output_directory)
+        target.mkdir(parents=True, exist_ok=True)
+        label = "paripurna" if data.invitation_type == "paripurna" else slugify_filename(data.meeting_executor)
+        path = target / f"daftar-hadir-{label}-{self._invitation_date_slug(data)}.docx"
+        self._generate_meeting_attendance(data, path)
+        return path
+
+    def generate_invitation_report(
+        self,
+        data: InvitationFormData,
+        output_directory: str | Path,
+        *,
+        preview: bool = False,
+    ) -> GenerationReport:
+        data.validate_preview() if preview else data.validate()
+        target = Path(output_directory)
+        target.mkdir(parents=True, exist_ok=True)
+        date_slug = self._invitation_date_slug(data)
+        report = GenerationReport()
         if data.invitation_type == "paripurna":
-            main_path = target / f"undangan-paripurna-{date_slug}.docx"
-            self._generate_plenary(data, main_path)
+            main_path = target / (
+                f"undangan-paripurna-{self._invitation_date_slug(data, letter_date=True)}.docx"
+            )
+            self._run_generation(
+                report, "Undangan Paripurna", [main_path],
+                lambda: self._generate_plenary(data, main_path),
+            )
         else:
             executor_slug = slugify_filename(data.meeting_executor) or "pelaksana"
             meeting_slug = slugify_filename(data.meeting_type) or "rapat"
             main_path = target / f"{meeting_slug}-{executor_slug}-{date_slug}.docx"
-            self._generate_regular(data, main_path)
-        generated.append(main_path)
+            self._run_generation(
+                report, "Undangan Rapat Biasa", [main_path],
+                lambda: self._generate_regular(data, main_path),
+            )
 
         if data.include_official_note:
             path = target / f"naskah-dinas-{'paripurna' if data.invitation_type == 'paripurna' else 'rapat'}-{date_slug}.docx"
-            generate_naskah_dinas(
-                TEMPLATE_NASKAH_DINAS_RAPAT, path, data.number,
-                format_date_id(data.letter_date), data.agenda,
+            self._run_generation(
+                report, "Naskah Dinas", [path],
+                lambda: generate_naskah_dinas(
+                    TEMPLATE_NASKAH_DINAS_RAPAT, path, data.number,
+                    format_date_id(data.letter_date), data.agenda,
+                ),
             )
-            generated.append(path)
         if data.include_attendance:
             path = target / f"daftar-hadir-{'paripurna' if data.invitation_type == 'paripurna' else slugify_filename(data.meeting_executor)}-{date_slug}.docx"
-            self._generate_meeting_attendance(data, path)
-            generated.append(path)
-        return generated
+            self._run_generation(
+                report, "Daftar Hadir Rapat", [path],
+                lambda: self._generate_meeting_attendance(data, path),
+            )
+        return report
+
+    def generate_invitation(
+        self,
+        data: InvitationFormData,
+        output_directory: str | Path,
+        *,
+        preview: bool = False,
+    ) -> list[Path]:
+        report = self.generate_invitation_report(data, output_directory, preview=preview)
+        if report.failures:
+            raise DocumentGenerationError(report)
+        return report.files
 
     @staticmethod
     def _generate_plenary(data: InvitationFormData, output_path: str | Path) -> None:

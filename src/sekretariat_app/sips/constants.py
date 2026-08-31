@@ -22,6 +22,27 @@ JENIS_RAPAT_OPTIONS = [
 JENIS_PERJALANAN_DPRD = ["Kunjungan Kerja", "Kunjungan Konsultasi", "Bimbingan Teknis"]
 JENIS_PERJALANAN_SETWAN = ["Studi Komparasi", "Kunjungan Konsultasi", "Bimbingan Teknis"]
 
+# Referensi autocomplete tujuan dari SIPS lama. Pengguna tetap dapat mengetik
+# nama instansi/wilayah lain secara bebas.
+DEFAULT_TRAVEL_DESTINATIONS = [
+    "Kota Manado", "Kota Bitung", "Kota Tomohon", "Kota Kotamobagu",
+    "Kabupaten Minahasa", "Kabupaten Minahasa Utara", "Kabupaten Minahasa Selatan",
+    "Kabupaten Minahasa Tenggara", "Kabupaten Bolaang Mongondow",
+    "Kabupaten Bolaang Mongondow Utara", "Kabupaten Bolaang Mongondow Selatan",
+    "Kabupaten Bolaang Mongondow Timur", "Kabupaten Kepulauan Sangihe",
+    "Kabupaten Kepulauan Talaud", "Kabupaten Kepulauan Sitaro",
+    "DKI Jakarta", "Kota Surabaya", "Kota Bandung", "Kota Medan",
+    "Kota Semarang", "Kota Makassar", "Kota Palembang", "Kota Tangerang",
+    "Kota Tangerang Selatan", "Kota Bekasi", "Kota Depok", "Kota Yogyakarta",
+    "Kota Surakarta (Solo)", "Kota Balikpapan", "Kota Samarinda",
+    "Kota Banjarmasin", "Kota Pontianak", "Kota Denpasar", "Kota Mataram",
+    "Kota Kupang", "Kota Ambon", "Kota Jayapura", "Kota Sorong",
+    "Kota Palu", "Kota Kendari", "Kota Gorontalo", "Kota Palangkaraya",
+    "Kota Tarakan", "Kota Banda Aceh", "Kota Padang", "Kota Pekanbaru",
+    "Kota Jambi", "Kota Bengkulu", "Kota Bandar Lampung", "Kota Pangkalpinang",
+    "Kota Tanjungpinang",
+]
+
 TUJUAN_SURAT_DPRD_MAP = {
     "Pimpinan dan Anggota DPRD Kota Bitung": "PIMPINAN DAN ANGGOTA DPRD KOTA BITUNG",
     "Pimpinan dan Anggota Komisi I": "PIMPINAN DAN ANGGOTA KOMISI I DPRD KOTA BITUNG",

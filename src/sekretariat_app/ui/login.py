@@ -83,7 +83,15 @@ class LoginDialog(QDialog):
         login.clicked.connect(self._login)
         form.addWidget(login)
         form.addStretch()
-        hint = QLabel("Akun awal pengembangan: admin / admin123\nSegera ubah kata sandi melalui menu Kelola User.")
+        if self.repository.initial_admin_password_path.exists():
+            hint_text = (
+                "Akun admin baru telah dibuat. Kata sandi awal tersimpan di:\n"
+                f"{self.repository.initial_admin_password_path}\n"
+                "File akan dihapus setelah login pertama berhasil."
+            )
+        else:
+            hint_text = "Gunakan akun lokal yang telah dibuat oleh Administrator."
+        hint = QLabel(hint_text)
         hint.setObjectName("LoginHint")
         hint.setWordWrap(True)
         form.addWidget(hint)

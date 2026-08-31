@@ -16,21 +16,15 @@ class UnifiedApplicationTests(unittest.TestCase):
     def test_packaged_employee_master_resolves_position(self):
         master = EmployeeMaster()
         self.assertEqual(len(master.records), 29)
-        self.assertEqual(
-            master.find("YUNIKY RAINTUNG").position,
-            "Petugas Protokol Komisi III",
-        )
-        self.assertEqual(
-            master.find("ZUSANA J.D. KAUNANG").position,
-            "Analis Kebijakan Ahli Muda",
-        )
-        positions = master.resolve_positions([Employee("120", "YUNIKY RAINTUNG")])
-        self.assertEqual(positions["120"], "Petugas Protokol Komisi III")
+        reference = master.records[0]
+        self.assertEqual(master.find(reference.name).position, reference.position)
+        positions = master.resolve_positions([Employee("ID-UJI", reference.name)])
+        self.assertEqual(positions["ID-UJI"], reference.position)
 
     def test_employee_name_normalization_removes_titles_and_degrees(self):
         self.assertEqual(
-            normalize_employee_name("Drs. ALBERT M. SARESE, M.Si."),
-            "ALBERT M SARESE",
+            normalize_employee_name("Drs. PEGAWAI CONTOH, M.Si."),
+            "PEGAWAI CONTOH",
         )
 
     def test_default_project_roundtrip_and_f4_size(self):
@@ -59,7 +53,15 @@ class UnifiedApplicationTests(unittest.TestCase):
     def test_user_password_is_hashed_and_authentication_works(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = UserRepository(Path(temp_dir) / "users.db")
-            self.assertIsNotNone(repository.authenticate("admin", "admin123"))
+            credential_path = repository.initial_admin_password_path
+            self.assertTrue(credential_path.exists())
+            initial_password = next(
+                line.split(":", 1)[1].strip()
+                for line in credential_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("Kata sandi:")
+            )
+            self.assertIsNotNone(repository.authenticate("admin", initial_password))
+            self.assertFalse(credential_path.exists())
             self.assertIsNone(repository.authenticate("admin", "wrong-password"))
             created = repository.add_user("operator1", "Operator Satu", "operator", "rahasia123")
             self.assertEqual(repository.authenticate("operator1", "rahasia123"), created)

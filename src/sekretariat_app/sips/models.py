@@ -64,11 +64,14 @@ class TravelFormData:
     executors: list[dict[str, Any]] = field(default_factory=list)
     companions: list[dict[str, Any]] = field(default_factory=list)
 
-    def validate(self) -> None:
+    def validate_preview(self) -> None:
+        """Validasi minimum agar Live Preview dapat dirender saat form diisi."""
         if self.mode not in {"dprd", "setwan"}:
             raise ValueError("Mode perjalanan dinas tidak valid.")
         if self.end_date < self.start_date:
             raise ValueError("Tanggal selesai tidak boleh sebelum tanggal mulai.")
+        if not self.travel_type.strip():
+            raise ValueError("Jenis perjalanan wajib dipilih.")
         if not self.subject.strip():
             raise ValueError("Materi/agenda kegiatan wajib diisi.")
         if not self.destinations:
@@ -77,6 +80,56 @@ class TravelFormData:
             raise ValueError("Pilih minimal satu anggota DPRD atau pendamping ASN.")
         if self.mode == "setwan" and not (self.executors or self.companions):
             raise ValueError("Pilih minimal satu pelaksana atau pendamping ASN.")
+
+    def required_document_numbers(self) -> dict[str, str]:
+        """Nomor yang benar-benar dipakai oleh cabang dokumen terpilih."""
+        required: dict[str, str] = {}
+        if self.mode == "dprd":
+            if self.dprd:
+                required.update({
+                    "surat_tugas_dprd": "Surat Tugas DPRD",
+                    "spd_dprd": "SPD DPRD",
+                })
+            if self.asn:
+                required.update({
+                    "surat_tugas_asn": "Surat Tugas Pendamping ASN",
+                    "spd_asn": "SPD Pendamping ASN",
+                })
+            if self.dprd or self.asn:
+                required["pemberitahuan_dprd"] = "Surat Pemberitahuan DPRD"
+        else:
+            required.update({
+                "surat_tugas_asn": "Surat Tugas Setwan",
+                "pemberitahuan_asn": "Surat Pemberitahuan Setwan",
+            })
+            if self.executors:
+                required["spd_pelaksana"] = "SPD Pelaksana ASN"
+            if self.companions:
+                required["spd_pendamping"] = "SPD Pendamping ASN"
+        return required
+
+    def validate(self) -> None:
+        """Validasi final sebelum seluruh surat dibuat dan dicatat."""
+        self.validate_preview()
+        missing_numbers = [
+            label
+            for key, label in self.required_document_numbers().items()
+            if not self.document_numbers.get(key, "").strip()
+        ]
+        if missing_numbers:
+            raise ValueError("Nomor dokumen wajib diisi: " + ", ".join(missing_numbers) + ".")
+        if not self.notice_subject.strip():
+            raise ValueError("Isi Surat Pemberitahuan wajib diisi.")
+        if self.mode == "dprd" and self.dprd:
+            if not self.basis_dprd.strip():
+                raise ValueError("Dasar Surat Tugas DPRD wajib diisi.")
+            if not self.signer_dprd.strip() or self.signer_dprd.strip() == "-":
+                raise ValueError("Penandatangan DPRD wajib dipilih.")
+        if (self.mode == "dprd" and self.asn) or self.mode == "setwan":
+            if not self.basis_asn.strip():
+                raise ValueError("Dasar Surat Tugas ASN wajib diisi.")
+            if not self.signer_asn.strip() or self.signer_asn.strip() == "-":
+                raise ValueError("Penandatangan ASN/SPD wajib dipilih.")
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -112,17 +165,32 @@ class InvitationFormData:
     include_related_attendance: bool = True
     include_secretariat_attendance: bool = False
 
-    def validate(self) -> None:
+    def validate_preview(self) -> None:
+        """Validasi minimum agar Live Preview tidak menunggu nomor final."""
         if self.invitation_type not in {"paripurna", "biasa"}:
             raise ValueError("Jenis undangan tidak valid.")
-        if not self.number.strip():
-            raise ValueError("Nomor undangan wajib diisi.")
         if not self.agenda.strip():
             raise ValueError("Isi surat/agenda rapat wajib diisi.")
         if not self.time_text.strip():
             raise ValueError("Jam pelaksanaan wajib diisi.")
         if self.invitation_type == "biasa" and not self.meeting_executor.strip():
             raise ValueError("Pelaksana rapat wajib diisi.")
+
+    def validate(self) -> None:
+        """Validasi final undangan dan dokumen pendukung yang dipilih."""
+        self.validate_preview()
+        if not self.number.strip():
+            raise ValueError("Nomor undangan wajib diisi.")
+        if not self.signer.strip() or self.signer.strip() == "-":
+            raise ValueError("Penandatangan undangan wajib dipilih.")
+        if self.invitation_type == "paripurna":
+            if not self.clothing.strip():
+                raise ValueError("Pakaian rapat paripurna wajib dipilih.")
+            if len(self.scenarios) > 7:
+                raise ValueError("Skenario rapat paripurna maksimal tujuh item.")
+        else:
+            if not self.meeting_type.strip():
+                raise ValueError("Jenis rapat wajib diisi.")
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
