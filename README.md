@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.7.0 — Pelaksana dan tujuan Perjalanan Dinas**.
+Versi source saat ini: **0.8.0 — Form responsif dan Studio Auto Kolase**.
 
 ## Menu aplikasi
 
@@ -34,11 +34,15 @@ browser terpisah.
 - Orientasi portrait/landscape dan pengaturan empat sisi margin.
 - Sebelas template kolase 1, 2, 3, 4, 5, 6, dan 8 foto.
 - Kisi kustom sampai 6 × 6.
+- Studio auto-kolase dengan preview foto nyata sebelum diterapkan.
+- Mini-preview visual untuk setiap gaya kisi, bukan daftar nama berbentuk teks.
+- Pengaturan lebar/tinggi seluruh kumpulan foto dan jarak antar-foto dalam mm.
 - Kolase otomatis dari seluruh foto di panel Media menjadi beberapa halaman.
 - Impor satu atau banyak foto, impor folder, dan drag-and-drop dari Explorer.
 - Media tray lokal dengan thumbnail.
 - Pindah dan resize elemen secara langsung pada kanvas.
-- Crop, zoom, geser posisi crop, fit cover/contain/fill, dan rotasi foto.
+- Crop interaktif bergaya Canva: frame tetap, foto dapat diseret dan di-zoom
+  langsung di dalam frame, disertai fit cover/contain/fill dan rotasi.
 - Border, warna border, sudut bulat, serta keterangan foto.
 - Teks bebas yang dapat dipindah, diedit langsung, dirotasi, dan dikunci.
 - Font, ukuran, lebar kotak, bold, italic, underline, alignment, jarak huruf,
@@ -78,6 +82,10 @@ Form dan generator SIPS telah tersambung langsung ke UI PySide6. Tombol pada
 menu Perjalanan Dinas dan Surat Undangan bukan lagi placeholder. Kemampuannya:
 
 - Perjalanan Dinas DPRD dan Sekretariat DPRD pada form terpisah.
+- Form perjalanan responsif tanpa scroll horizontal, dengan daftar tujuan yang
+  dapat menampilkan empat sampai lima tujuan sekaligus.
+- Validasi duplikasi hanya memeriksa nomor/materi yang benar-benar diisi;
+  kolom kosong dan placeholder `-` tidak dimasukkan ke indeks duplikasi.
 - Filter kategori DPRD berbentuk chip yang dapat dipilih beberapa sekaligus;
   daftar nama hanya menampilkan kategori aktif, disertai pencarian dan pilihan
   beberapa nama dari master resmi lokal (100 baris anggota DPRD dan 27 ASN).

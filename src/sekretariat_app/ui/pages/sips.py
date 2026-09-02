@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -358,7 +359,10 @@ class TravelPage(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         form_host = QWidget()
+        form_host.setMinimumWidth(0)
+        form_host.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         form_layout = QVBoxLayout(form_host)
         form_layout.setContentsMargins(0, 0, 8, 0)
         form_layout.setSpacing(12)
@@ -433,6 +437,9 @@ class TravelPage(QWidget):
 
     def _numbers_card(self) -> QFrame:
         card, layout = self._card("Nomor Dokumen")
+        layout.setHorizontalSpacing(8)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 1)
         self.number_fields: dict[str, QLineEdit] = {}
         entries = (
             (
@@ -454,6 +461,8 @@ class TravelPage(QWidget):
         for index, (key, label) in enumerate(entries):
             row, column = divmod(index, 2)
             field = QLineEdit()
+            field.setMinimumWidth(0)
+            field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             field.setPlaceholderText(f"Masukkan nomor {label.lower()}…")
             layout.addWidget(QLabel(label), row * 2 + 1, column)
             layout.addWidget(field, row * 2 + 2, column)
@@ -462,8 +471,14 @@ class TravelPage(QWidget):
 
     def _agenda_card(self) -> QFrame:
         card, layout = self._card("Dasar dan Materi Kegiatan")
+        layout.setColumnStretch(0, 0)
+        layout.setColumnStretch(1, 1)
         self.travel_type = QComboBox()
         self.travel_type.addItems(JENIS_PERJALANAN_DPRD if self.mode == "dprd" else JENIS_PERJALANAN_SETWAN)
+        self.travel_type.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.travel_type.setMinimumContentsLength(12)
+        self.travel_type.setMinimumWidth(0)
+        self.travel_type.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.basis_dprd = QPlainTextEdit()
         self.basis_dprd.setMaximumHeight(70)
         self.basis_asn = QPlainTextEdit()
@@ -480,7 +495,11 @@ class TravelPage(QWidget):
             ("Isi Surat Pemberitahuan", self.notice_subject),
         )
         for index, (label, widget) in enumerate(widgets, start=1):
-            layout.addWidget(QLabel(label), index, 0)
+            widget.setMinimumWidth(0)
+            label_widget = QLabel(label)
+            label_widget.setWordWrap(True)
+            label_widget.setMaximumWidth(154)
+            layout.addWidget(label_widget, index, 0)
             layout.addWidget(widget, index, 1)
         self.duplicate_title_warning = QLabel()
         self.duplicate_title_warning.setStyleSheet("color: #B45309; font-weight: 600;")
@@ -496,6 +515,7 @@ class TravelPage(QWidget):
 
     def _schedule_card(self) -> QFrame:
         card, layout = self._card("Tanggal Pelaksanaan")
+        layout.setColumnStretch(1, 1)
         self.letter_date = _date_edit()
         self.start_date = _date_edit()
         self.end_date = _date_edit()
@@ -507,12 +527,16 @@ class TravelPage(QWidget):
             start=1,
         ):
             layout.addWidget(QLabel(label), row, 0)
+            widget.setMinimumWidth(0)
             layout.addWidget(widget, row, 1)
         return card
 
     def _destination_card(self) -> QFrame:
         card, layout = self._card("Tujuan Perjalanan")
+        layout.setColumnStretch(0, 1)
         self.destination_input = QLineEdit()
+        self.destination_input.setMinimumWidth(0)
+        self.destination_input.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.destination_input.setPlaceholderText("Contoh: DPRD Kota Manado atau Kota Bandung")
         completer = QCompleter(DEFAULT_TRAVEL_DESTINATIONS, self.destination_input)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -523,7 +547,8 @@ class TravelPage(QWidget):
         add.clicked.connect(self._add_destination)
         self.destination_input.returnPressed.connect(self._add_destination)
         self.destinations = QListWidget()
-        self.destinations.setMaximumHeight(112)
+        self.destinations.setMinimumHeight(150)
+        self.destinations.setMaximumHeight(178)
         remove = QPushButton("Hapus Tujuan Terpilih")
         remove.clicked.connect(lambda: self.destinations.takeItem(self.destinations.currentRow()))
         layout.addWidget(self.destination_input, 1, 0)

@@ -4,8 +4,8 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtCore import QRectF, QSize, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -42,10 +42,34 @@ from sekretariat_app.config import autosave_path, documentation_dir
 from sekretariat_app.documentation.exporters import DocumentationExporter
 from sekretariat_app.documentation.models import DocumentPage, DocumentProject, PhotoElement, TextElement
 from sekretariat_app.documentation.scene import DocumentScene, PhotoItem, TextItem
-from sekretariat_app.documentation.templates import TEMPLATES
+from sekretariat_app.documentation.templates import TEMPLATES, layout_rectangles, template_by_id
 
 
 IMAGE_FILTER = "Gambar (*.jpg *.jpeg *.png *.webp *.bmp)"
+
+
+def _template_icon(template_id: str, size: QSize = QSize(184, 104)) -> QIcon:
+    """Buat mini-preview kisi tanpa bergantung pada aset gambar eksternal."""
+    template = template_by_id(template_id)
+    pixmap = QPixmap(size)
+    pixmap.fill(QColor("#f1f5f9"))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    page_height = max(72.0, size.height() - 12.0)
+    page_width = page_height * 215.0 / 330.0
+    page = QRectF((size.width() - page_width) / 2.0, 6.0, page_width, page_height)
+    painter.fillRect(page, QColor("#ffffff"))
+    painter.setPen(QPen(QColor("#94a3b8"), 1.0))
+    painter.drawRoundedRect(page, 3.0, 3.0)
+    rectangles = layout_rectangles(template, page_width, page_height, (7, 5, 5, 5), 2.2)
+    colors = ("#bfdbfe", "#c7d2fe", "#ddd6fe", "#bae6fd", "#a5f3fc", "#dbeafe")
+    for index, (x, y, width, height) in enumerate(rectangles):
+        cell = QRectF(page.left() + x, page.top() + y, width, height)
+        painter.fillRect(cell, QColor(colors[index % len(colors)]))
+        painter.setPen(QPen(QColor("#3b82f6"), 0.8))
+        painter.drawRoundedRect(cell, 1.2, 1.2)
+    painter.end()
+    return QIcon(pixmap)
 
 
 class CanvasView(QGraphicsView):
@@ -88,7 +112,162 @@ class CanvasView(QGraphicsView):
 
     def fit_page(self) -> None:
         self.resetTransform()
-        self.fitInView(self.scene().sceneRect().adjusted(-4, -4, 4, 4), Qt.AspectRatioMode.KeepAspectRatio)
+        self.fitInView(self.scene().sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+
+class CropPreview(QWidget):
+    """Crop interaktif: frame tetap, foto digeser dan diperbesar seperti Canva."""
+
+    crop_changed = Signal(float, float, float)
+
+    def __init__(self, photo_path: str, target_aspect: float, parent=None):
+        super().__init__(parent)
+        self.photo_path = photo_path
+        self.target_aspect = max(0.1, target_aspect)
+        self.crop_x = 0.5
+        self.crop_y = 0.5
+        self.zoom = 1.0
+        self.fit = "cover"
+        self.image_rotation = 0
+        self._drag_position = None
+        self._pixmap = QPixmap(photo_path)
+        self.setMinimumSize(560, 360)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def set_state(
+        self,
+        crop_x: float,
+        crop_y: float,
+        zoom: float,
+        fit: str,
+        image_rotation: int,
+    ) -> None:
+        self.crop_x = max(0.0, min(1.0, crop_x))
+        self.crop_y = max(0.0, min(1.0, crop_y))
+        self.zoom = max(1.0, min(5.0, zoom))
+        self.fit = fit
+        self.image_rotation = image_rotation % 360
+        self.update()
+
+    def _display_pixmap(self) -> QPixmap:
+        if self._pixmap.isNull() or not self.image_rotation:
+            return self._pixmap
+        return self._pixmap.transformed(
+            QTransform().rotate(self.image_rotation),
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    def _frame_rect(self) -> QRectF:
+        available = QRectF(self.rect()).adjusted(34, 28, -34, -28)
+        if available.width() / max(1.0, available.height()) > self.target_aspect:
+            height = available.height()
+            width = height * self.target_aspect
+        else:
+            width = available.width()
+            height = width / self.target_aspect
+        return QRectF(
+            available.center().x() - width / 2.0,
+            available.center().y() - height / 2.0,
+            width,
+            height,
+        )
+
+    def _cover_source(self, pixmap: QPixmap, frame: QRectF) -> tuple[QRectF, float, float]:
+        source = QRectF(pixmap.rect())
+        source_aspect = source.width() / max(1.0, source.height())
+        target_aspect = frame.width() / max(1.0, frame.height())
+        if source_aspect > target_aspect:
+            source_width, source_height = source.height() * target_aspect, source.height()
+        else:
+            source_width, source_height = source.width(), source.width() / target_aspect
+        source_width /= self.zoom
+        source_height /= self.zoom
+        max_x = max(0.0, source.width() - source_width)
+        max_y = max(0.0, source.height() - source_height)
+        return (
+            QRectF(max_x * self.crop_x, max_y * self.crop_y, source_width, source_height),
+            max_x,
+            max_y,
+        )
+
+    def paintEvent(self, event) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.fillRect(self.rect(), QColor("#0f172a"))
+        frame = self._frame_rect()
+        painter.fillRect(frame, QColor("#111827"))
+        pixmap = self._display_pixmap()
+        if not pixmap.isNull():
+            if self.fit == "fill":
+                painter.drawPixmap(frame, pixmap, QRectF(pixmap.rect()))
+            elif self.fit == "contain":
+                source_aspect = pixmap.width() / max(1.0, pixmap.height())
+                target_aspect = frame.width() / max(1.0, frame.height())
+                if source_aspect > target_aspect:
+                    height = frame.width() / source_aspect
+                    target = QRectF(frame.left(), frame.center().y() - height / 2.0, frame.width(), height)
+                else:
+                    width = frame.height() * source_aspect
+                    target = QRectF(frame.center().x() - width / 2.0, frame.top(), width, frame.height())
+                painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+            else:
+                source, _max_x, _max_y = self._cover_source(pixmap, frame)
+                painter.drawPixmap(frame, pixmap, source)
+        painter.setPen(QPen(QColor("#38bdf8"), 3.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(frame)
+        painter.setPen(QColor("#e2e8f0"))
+        painter.drawText(
+            QRectF(0, self.height() - 24, self.width(), 18),
+            Qt.AlignmentFlag.AlignCenter,
+            "Seret foto untuk mengatur posisi · roda mouse untuk zoom",
+        )
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._frame_rect().contains(event.position()):
+            self._drag_position = event.position()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_position is None or self.fit != "cover":
+            super().mouseMoveEvent(event)
+            return
+        pixmap = self._display_pixmap()
+        frame = self._frame_rect()
+        source, max_x, max_y = self._cover_source(pixmap, frame)
+        delta = event.position() - self._drag_position
+        if max_x > 0:
+            self.crop_x = max(0.0, min(1.0, self.crop_x - delta.x() * source.width() / frame.width() / max_x))
+        if max_y > 0:
+            self.crop_y = max(0.0, min(1.0, self.crop_y - delta.y() * source.height() / frame.height() / max_y))
+        self._drag_position = event.position()
+        self.crop_changed.emit(self.crop_x, self.crop_y, self.zoom)
+        self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._drag_position is not None:
+            self._drag_position = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        if self._frame_rect().contains(event.position()) and self.fit == "cover":
+            step = 0.12 if event.angleDelta().y() > 0 else -0.12
+            self.zoom = max(1.0, min(5.0, self.zoom + step))
+            self.crop_changed.emit(self.crop_x, self.crop_y, self.zoom)
+            self.update()
+            event.accept()
+            return
+        super().wheelEvent(event)
 
 
 class CropDialog(QDialog):
@@ -103,12 +282,26 @@ class CropDialog(QDialog):
             "fit": str(item.data.get("fit", "cover")),
         }
         self.setWindowTitle("Crop dan Posisi Foto")
-        self.resize(520, 560)
+        self.resize(760, 680)
         layout = QVBoxLayout(self)
-        self.preview = QLabel()
-        self.preview.setMinimumSize(440, 300)
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setObjectName("CropPreview")
+        instruction = QLabel(
+            "Area biru adalah frame akhir. Seret foto di dalam frame untuk mengatur bagian yang tampil."
+        )
+        instruction.setWordWrap(True)
+        instruction.setObjectName("MutedText")
+        layout.addWidget(instruction)
+        self.preview = CropPreview(
+            str(item.data.get("photo_path", "")),
+            item._rect.width() / max(1.0, item._rect.height()),
+            self,
+        )
+        self.preview.set_state(
+            self.original["crop_x"],
+            self.original["crop_y"],
+            self.original["zoom"],
+            self.original["fit"],
+            self.original["image_rotation"],
+        )
         layout.addWidget(self.preview, 1)
 
         form = QFormLayout()
@@ -136,35 +329,71 @@ class CropDialog(QDialog):
         form.addRow("Rotasi foto", rotate_row)
         layout.addLayout(form)
 
+        button_row = QHBoxLayout()
+        reset = QPushButton("Reset Crop")
+        reset.clicked.connect(self._reset_crop)
+        button_row.addWidget(reset)
+        button_row.addStretch()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Terapkan Crop")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.zoom.valueChanged.connect(self._update)
-        self.horizontal.valueChanged.connect(self._update)
-        self.vertical.valueChanged.connect(self._update)
-        self.fit_combo.currentTextChanged.connect(self._update)
+        button_row.addWidget(buttons)
+        layout.addLayout(button_row)
+        self.zoom.valueChanged.connect(self._update_from_controls)
+        self.horizontal.valueChanged.connect(self._update_from_controls)
+        self.vertical.valueChanged.connect(self._update_from_controls)
+        self.fit_combo.currentTextChanged.connect(self._update_from_controls)
+        self.preview.crop_changed.connect(self._update_from_preview)
         rotate_left.clicked.connect(lambda: self._rotate(-90))
         rotate_right.clicked.connect(lambda: self._rotate(90))
-        self._update()
+        self._update_from_controls()
 
     def _rotate(self, degrees: int) -> None:
         self.item.data["image_rotation"] = (int(self.item.data.get("image_rotation", 0)) + degrees) % 360
-        self._update()
+        self._update_from_controls()
 
-    def _update(self) -> None:
+    def _update_from_controls(self) -> None:
         self.item.data["fit"] = self.fit_combo.currentText()
         self.item.data["zoom"] = self.zoom.value() / 100
         self.item.data["crop_x"] = self.horizontal.value() / 100
         self.item.data["crop_y"] = self.vertical.value() / 100
         self.item.update()
-        scene = DocumentScene()
-        scene.configure_page(self.item._rect.width(), self.item._rect.height(), (0, 0, 0, 0))
-        data = self.item.to_data()
-        data.update(x=0, y=0, width=self.item._rect.width(), height=self.item._rect.height(), rotation=0)
-        scene.add_element(data)
-        image = scene.render_image(96)
-        self.preview.setPixmap(QPixmap.fromImage(image).scaled(self.preview.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        self.preview.set_state(
+            float(self.item.data["crop_x"]),
+            float(self.item.data["crop_y"]),
+            float(self.item.data["zoom"]),
+            str(self.item.data["fit"]),
+            int(self.item.data.get("image_rotation", 0)),
+        )
+
+    def _update_from_preview(self, crop_x: float, crop_y: float, zoom: float) -> None:
+        blockers = (
+            QSignalBlocker(self.horizontal),
+            QSignalBlocker(self.vertical),
+            QSignalBlocker(self.zoom),
+        )
+        self.horizontal.setValue(round(crop_x * 100))
+        self.vertical.setValue(round(crop_y * 100))
+        self.zoom.setValue(round(zoom * 100))
+        del blockers
+        self.item.data.update(crop_x=crop_x, crop_y=crop_y, zoom=zoom)
+        self.item.update()
+
+    def _reset_crop(self) -> None:
+        blockers = (
+            QSignalBlocker(self.horizontal),
+            QSignalBlocker(self.vertical),
+            QSignalBlocker(self.zoom),
+            QSignalBlocker(self.fit_combo),
+        )
+        self.horizontal.setValue(50)
+        self.vertical.setValue(50)
+        self.zoom.setValue(100)
+        self.fit_combo.setCurrentText("cover")
+        del blockers
+        self.item.data.update(crop_x=0.5, crop_y=0.5, zoom=1.0, fit="cover", image_rotation=0)
+        self._update_from_controls()
 
     def reject(self) -> None:
         self.item.data.update(self.original)
@@ -215,31 +444,143 @@ class PageSetupDialog(QDialog):
 
 
 class AutoCollageDialog(QDialog):
-    def __init__(self, media_count: int, parent=None):
+    """Studio auto-kolase dengan preview foto nyata sebelum diterapkan."""
+
+    def __init__(self, project: DocumentProject, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Kolase Otomatis")
+        self.project = project
+        self.setWindowTitle("Studio Auto Kolase Foto")
+        self.resize(980, 720)
         layout = QVBoxLayout(self)
+        width_mm, height_mm = project.page_size_mm
+        heading = QLabel(
+            f"{len(project.media)} foto terpilih  ·  {project.paper_size} "
+            f"{width_mm:g} × {height_mm:g} mm  ·  {project.orientation.title()}"
+        )
+        heading.setObjectName("SectionTitle")
+        layout.addWidget(heading)
         info = QLabel(
-            f"{media_count} foto akan dibagi otomatis ke beberapa halaman. "
-            "Urutan mengikuti panel Media."
+            "Pilih model kisi melalui mini-preview. Pratinjau di bawah diperbarui otomatis "
+            "sebelum kolase diterapkan ke dokumen."
         )
         info.setWordWrap(True)
+        info.setObjectName("MutedText")
         layout.addWidget(info)
-        form = QFormLayout()
-        self.template = QComboBox()
+
+        body = QSplitter(Qt.Orientation.Horizontal)
+        preview_card = QFrame()
+        preview_card.setObjectName("CanvasCard")
+        preview_layout = QVBoxLayout(preview_card)
+        preview_layout.addWidget(QLabel("Pratinjau Auto Kolase"))
+        self.preview = QLabel()
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumSize(360, 460)
+        self.preview.setStyleSheet("background: #cbd5e1; border: 1px solid #94a3b8;")
+        preview_layout.addWidget(self.preview, 1)
+        self.preview_summary = QLabel()
+        self.preview_summary.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_summary.setObjectName("MutedText")
+        preview_layout.addWidget(self.preview_summary)
+        body.addWidget(preview_card)
+
+        options = QFrame()
+        options.setObjectName("SidePanel")
+        options_layout = QVBoxLayout(options)
+        options_layout.addWidget(QLabel("Pilihan Model Kisi"))
+        self.template_list = QListWidget()
+        self.template_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.template_list.setIconSize(QSize(150, 84))
+        self.template_list.setGridSize(QSize(184, 128))
+        self.template_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.template_list.setMovement(QListWidget.Movement.Static)
+        self.template_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for template in TEMPLATES:
-            self.template.addItem(template.name, template.template_id)
-        self.template.setCurrentIndex(next((i for i, value in enumerate(TEMPLATES) if value.template_id == "grid-4"), 0))
+            item = QListWidgetItem(_template_icon(template.template_id), template.name)
+            item.setData(Qt.ItemDataRole.UserRole, template.template_id)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            item.setToolTip(template.description)
+            self.template_list.addItem(item)
+        options_layout.addWidget(self.template_list, 1)
+
+        form = QFormLayout()
+        self.gap = QDoubleSpinBox()
+        self.gap.setRange(0.0, 16.0)
+        self.gap.setSingleStep(0.5)
+        self.gap.setValue(3.0)
+        self.gap.setSuffix(" mm")
+        self.width_percent = QSpinBox()
+        self.width_percent.setRange(50, 100)
+        self.width_percent.setValue(100)
+        self.width_percent.setSuffix("%")
+        self.height_percent = QSpinBox()
+        self.height_percent.setRange(50, 100)
+        self.height_percent.setValue(100)
+        self.height_percent.setSuffix("%")
+        form.addRow("Jarak antar foto", self.gap)
+        form.addRow("Lebar kumpulan", self.width_percent)
+        form.addRow("Tinggi kumpulan", self.height_percent)
+        options_layout.addLayout(form)
         self.replace_pages = QCheckBox("Ganti seluruh halaman yang ada")
         self.replace_pages.setChecked(True)
-        form.addRow("Template per halaman", self.template)
-        form.addRow("", self.replace_pages)
-        layout.addLayout(form)
+        options_layout.addWidget(self.replace_pages)
+        body.addWidget(options)
+        body.setSizes((430, 510))
+        layout.addWidget(body, 1)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Buat Kolase")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Terapkan Kolase ke Dokumen")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        preferred_count = min(len(project.media), 8)
+        preferred = next(
+            (index for index, template in enumerate(TEMPLATES) if len(template.cells) == preferred_count),
+            next((index for index, template in enumerate(TEMPLATES) if template.template_id == "grid-4"), 0),
+        )
+        self.template_list.setCurrentRow(preferred)
+        self.template_list.currentItemChanged.connect(self._render_preview)
+        self.gap.valueChanged.connect(self._render_preview)
+        self.width_percent.valueChanged.connect(self._render_preview)
+        self.height_percent.valueChanged.connect(self._render_preview)
+        self._render_preview()
+
+    @property
+    def template_id(self) -> str:
+        item = self.template_list.currentItem()
+        return str(item.data(Qt.ItemDataRole.UserRole)) if item else "grid-4"
+
+    def _render_preview(self, *_args) -> None:
+        template = template_by_id(self.template_id)
+        width, height = self.project.page_size_mm
+        margins = (
+            self.project.margins.top,
+            self.project.margins.right,
+            self.project.margins.bottom,
+            self.project.margins.left,
+        )
+        scene = DocumentScene()
+        scene.configure_page(width, height, margins, "#ffffff", self.project.letterhead)
+        scene.apply_template(
+            template.template_id,
+            self.project.media[: len(template.cells)],
+            gap=self.gap.value(),
+            width_percent=self.width_percent.value(),
+            height_percent=self.height_percent.value(),
+        )
+        image = scene.render_image(72)
+        self.preview.setPixmap(
+            QPixmap.fromImage(image).scaled(
+                max(1, self.preview.width() - 24),
+                max(1, self.preview.height() - 24),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        pages = max(1, (len(self.project.media) + len(template.cells) - 1) // len(template.cells))
+        self.preview_summary.setText(
+            f"{template.name} · {len(template.cells)} foto/halaman · estimasi {pages} halaman"
+        )
 
 
 class PreviewDialog(QDialog):
@@ -317,6 +658,12 @@ class DocumentationPhotoPage(QWidget):
         )
         self.scene.configure_page(width, height, margins, "#ffffff", self.project.letterhead)
         self.scene.apply_template("grid-4")
+        self.project.pages[0].collage = {
+            "template_id": "grid-4",
+            "gap_mm": 3.0,
+            "width_percent": 100,
+            "height_percent": 100,
+        }
         text = TextElement(
             text="MASUKAN TEKS",
             x=35,
@@ -422,6 +769,9 @@ class DocumentationPhotoPage(QWidget):
         self.project_title.editingFinished.connect(self._update_project_title)
         canvas_toolbar.addWidget(QLabel("Proyek:"))
         canvas_toolbar.addWidget(self.project_title, 1)
+        self.paper_badge = QLabel()
+        self.paper_badge.setObjectName("OfflineBadge")
+        canvas_toolbar.addWidget(self.paper_badge)
         zoom_out = QToolButton()
         zoom_out.setText("−")
         zoom_in = QToolButton()
@@ -473,12 +823,17 @@ class DocumentationPhotoPage(QWidget):
         info.setObjectName("MutedText")
         layout.addWidget(info)
         self.template_list = QListWidget()
-        self.template_list.setWordWrap(True)
+        self.template_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.template_list.setIconSize(QSize(184, 104))
+        self.template_list.setGridSize(QSize(224, 148))
+        self.template_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.template_list.setMovement(QListWidget.Movement.Static)
         self.template_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for template in TEMPLATES:
-            item = QListWidgetItem(f"{template.name}\n{template.description}")
+            item = QListWidgetItem(_template_icon(template.template_id), template.name)
             item.setData(Qt.ItemDataRole.UserRole, template.template_id)
-            item.setSizeHint(QSize(230, 52))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            item.setToolTip(template.description)
             self.template_list.addItem(item)
         self.template_list.itemDoubleClicked.connect(lambda item: self.apply_template(item.data(Qt.ItemDataRole.UserRole)))
         layout.addWidget(self.template_list, 1)
@@ -501,6 +856,30 @@ class DocumentationPhotoPage(QWidget):
         custom_apply.clicked.connect(self.apply_custom_grid)
         custom_layout.addRow(custom_apply)
         layout.addWidget(custom_box)
+
+        collage_box = QFrame()
+        collage_box.setObjectName("InsetCard")
+        collage_layout = QFormLayout(collage_box)
+        self.collage_gap = QDoubleSpinBox()
+        self.collage_gap.setRange(0.0, 16.0)
+        self.collage_gap.setSingleStep(0.5)
+        self.collage_gap.setValue(3.0)
+        self.collage_gap.setSuffix(" mm")
+        self.collage_width = QSpinBox()
+        self.collage_width.setRange(50, 100)
+        self.collage_width.setValue(100)
+        self.collage_width.setSuffix("%")
+        self.collage_height = QSpinBox()
+        self.collage_height.setRange(50, 100)
+        self.collage_height.setValue(100)
+        self.collage_height.setSuffix("%")
+        collage_layout.addRow("Jarak foto", self.collage_gap)
+        collage_layout.addRow("Lebar kolase", self.collage_width)
+        collage_layout.addRow("Tinggi kolase", self.collage_height)
+        resize_collage = QPushButton("Terapkan Ukuran Kolase")
+        resize_collage.clicked.connect(self._apply_collage_settings)
+        collage_layout.addRow(resize_collage)
+        layout.addWidget(collage_box)
         return widget
 
     def _letterhead_tab(self) -> QWidget:
@@ -765,6 +1144,10 @@ class DocumentationPhotoPage(QWidget):
             self.page_list.setCurrentRow(self.current_page_index)
         with QSignalBlocker(self.project_title):
             self.project_title.setText(self.project.title)
+        width, height = self.project.page_size_mm
+        self.paper_badge.setText(
+            f"{self.project.paper_size} · {width:g} × {height:g} mm · {self.project.orientation.title()}"
+        )
         self._load_current_scene()
         self._refresh_media()
         self._refresh_letterhead_controls()
@@ -779,6 +1162,22 @@ class DocumentationPhotoPage(QWidget):
         margins = (self.project.margins.top, self.project.margins.right, self.project.margins.bottom, self.project.margins.left)
         letterhead = self.project.letterhead if self.current_page_index == 0 else {**self.project.letterhead, "enabled": False}
         self.scene.load_page(page, width, height, margins, letterhead)
+        collage = page.collage or {}
+        if hasattr(self, "collage_gap"):
+            controls = (self.collage_gap, self.collage_width, self.collage_height)
+            blockers = [QSignalBlocker(control) for control in controls]
+            self.collage_gap.setValue(float(collage.get("gap_mm", 3.0)))
+            self.collage_width.setValue(int(collage.get("width_percent", 100)))
+            self.collage_height.setValue(int(collage.get("height_percent", 100)))
+            del blockers
+            template_id = str(collage.get("template_id", ""))
+            if template_id:
+                for index in range(self.template_list.count()):
+                    item = self.template_list.item(index)
+                    if item.data(Qt.ItemDataRole.UserRole) == template_id:
+                        with QSignalBlocker(self.template_list):
+                            self.template_list.setCurrentRow(index)
+                        break
 
     def _refresh_letterhead_controls(self) -> None:
         data = self.project.letterhead
@@ -918,6 +1317,7 @@ class DocumentationPhotoPage(QWidget):
             title=f"{source.title} (Salinan)",
             elements=json.loads(json.dumps(source.elements)),
             background=source.background,
+            collage=json.loads(json.dumps(source.collage)),
         )
         self.project.pages.insert(self.current_page_index + 1, copy)
         self.current_page_index += 1
@@ -941,8 +1341,31 @@ class DocumentationPhotoPage(QWidget):
         self.apply_template(item.data(Qt.ItemDataRole.UserRole))
 
     def apply_template(self, template_id: str) -> None:
-        self.scene.apply_template(template_id)
+        self.project.pages[self.current_page_index].collage = {
+            "template_id": template_id,
+            "gap_mm": self.collage_gap.value(),
+            "width_percent": self.collage_width.value(),
+            "height_percent": self.collage_height.value(),
+        }
+        self.scene.apply_template(
+            template_id,
+            gap=self.collage_gap.value(),
+            width_percent=self.collage_width.value(),
+            height_percent=self.collage_height.value(),
+        )
         self.status_text("Template diterapkan. Klik ganda slot untuk memilih atau mengatur foto.")
+
+    def _apply_collage_settings(self) -> None:
+        page = self.project.pages[self.current_page_index]
+        template_id = str((page.collage or {}).get("template_id", ""))
+        if not template_id:
+            item = self.template_list.currentItem()
+            template_id = str(item.data(Qt.ItemDataRole.UserRole)) if item else "grid-4"
+        self.apply_template(template_id)
+        self.status_text(
+            f"Ukuran kumpulan foto diperbarui: {self.collage_width.value()}% × "
+            f"{self.collage_height.value()}%, jarak {self.collage_gap.value():g} mm."
+        )
 
     def apply_custom_grid(self) -> None:
         columns = self.custom_columns.value()
@@ -969,17 +1392,24 @@ class DocumentationPhotoPage(QWidget):
                 ).__dict__
                 self.scene.add_element(data)
                 index += 1
+        self.project.pages[self.current_page_index].collage = {
+            "custom_rows": rows,
+            "custom_columns": columns,
+            "gap_mm": gap,
+            "width_percent": 100,
+            "height_percent": 100,
+        }
         self.scene.content_changed.emit()
 
     def auto_collage(self) -> None:
         if not self.project.media:
             QMessageBox.information(self, "Media kosong", "Impor foto terlebih dahulu sebelum membuat kolase otomatis.")
             return
-        dialog = AutoCollageDialog(len(self.project.media), self)
+        dialog = AutoCollageDialog(self.project, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._save_current_scene()
-        template_id = str(dialog.template.currentData())
+        template_id = dialog.template_id
         template = next(template for template in TEMPLATES if template.template_id == template_id)
         slot_count = len(template.cells)
         generated: list[DocumentPage] = []
@@ -997,7 +1427,19 @@ class DocumentationPhotoPage(QWidget):
             scene = DocumentScene()
             letterhead = self.project.letterhead if page_number == 1 else {**self.project.letterhead, "enabled": False}
             scene.configure_page(width, height, base_margins, page.background, letterhead)
-            scene.apply_template(template_id, paths)
+            page.collage = {
+                "template_id": template_id,
+                "gap_mm": dialog.gap.value(),
+                "width_percent": dialog.width_percent.value(),
+                "height_percent": dialog.height_percent.value(),
+            }
+            scene.apply_template(
+                template_id,
+                paths,
+                gap=dialog.gap.value(),
+                width_percent=dialog.width_percent.value(),
+                height_percent=dialog.height_percent.value(),
+            )
             page.elements = scene.serialize_elements()
             generated.append(page)
         if dialog.replace_pages.isChecked():
@@ -1262,6 +1704,7 @@ class DocumentationPhotoPage(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._save_current_scene()
+        old_width, old_height = self.project.page_size_mm
         self.project.paper_size = dialog.paper.currentText()
         self.project.orientation = dialog.orientation.currentText()
         self.project.custom_width_mm = dialog.custom_width.value()
@@ -1270,6 +1713,16 @@ class DocumentationPhotoPage(QWidget):
         self.project.margins.right = dialog.right.value()
         self.project.margins.bottom = dialog.bottom.value()
         self.project.margins.left = dialog.left.value()
+        new_width, new_height = self.project.page_size_mm
+        scale_x = new_width / max(1.0, old_width)
+        scale_y = new_height / max(1.0, old_height)
+        for page in self.project.pages:
+            for element in page.elements:
+                element["x"] = float(element.get("x", 0.0)) * scale_x
+                element["y"] = float(element.get("y", 0.0)) * scale_y
+                element["width"] = float(element.get("width", 1.0)) * scale_x
+                if element.get("kind") == "photo":
+                    element["height"] = float(element.get("height", 1.0)) * scale_y
         self._load_current_scene()
         self._push_history()
         self._schedule_autosave()

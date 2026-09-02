@@ -198,7 +198,7 @@ class PhotoItem(QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
-            bounds = self.scene().sceneRect()
+            bounds = getattr(self.scene(), "paper_rect", self.scene().sceneRect())
             pos = value
             x = max(bounds.left(), min(pos.x(), bounds.right() - self._rect.width()))
             y = max(bounds.top(), min(pos.y(), bounds.bottom() - self._rect.height()))
@@ -318,8 +318,18 @@ class DocumentScene(QGraphicsScene):
         self.background_color = QColor("#ffffff")
         self.letterhead: dict = {}
         self.show_guides = True
-        self.setSceneRect(0, 0, self.page_width, self.page_height)
+        self.paper_rect = QRectF(0, 0, self.page_width, self.page_height)
+        self._set_padded_scene_rect()
         self.selectionChanged.connect(self.update)
+
+    def _set_padded_scene_rect(self) -> None:
+        padding = max(10.0, min(self.page_width, self.page_height) * 0.055)
+        self.setSceneRect(
+            -padding,
+            -padding,
+            self.page_width + padding * 2,
+            self.page_height + padding * 2,
+        )
 
     def configure_page(
         self,
@@ -334,12 +344,18 @@ class DocumentScene(QGraphicsScene):
         self.margins = margins
         self.background_color = QColor(background)
         self.letterhead = dict(letterhead or {})
-        self.setSceneRect(0, 0, width, height)
+        self.paper_rect = QRectF(0, 0, width, height)
+        self._set_padded_scene_rect()
         self.update()
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor("#cbd5e1"))
-        painter.fillRect(self.sceneRect(), self.background_color)
+        shadow = self.paper_rect.translated(3.0, 3.0)
+        painter.fillRect(shadow, QColor(15, 23, 42, 55))
+        painter.fillRect(self.paper_rect, self.background_color)
+        painter.setPen(QPen(QColor("#94a3b8"), 0.35))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.paper_rect)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         del rect
@@ -430,14 +446,30 @@ class DocumentScene(QGraphicsScene):
         self.content_changed.emit()
         return item
 
-    def apply_template(self, template_id: str, photo_paths: list[str] | None = None) -> None:
+    def apply_template(
+        self,
+        template_id: str,
+        photo_paths: list[str] | None = None,
+        *,
+        gap: float = 3.0,
+        width_percent: float = 100.0,
+        height_percent: float = 100.0,
+    ) -> None:
         existing = [item.to_data().get("photo_path", "") for item in self.items() if isinstance(item, PhotoItem)]
         paths = list(photo_paths or existing)
         for item in list(self.items()):
             if isinstance(item, PhotoItem):
                 self.removeItem(item)
         template = template_by_id(template_id)
-        rectangles = layout_rectangles(template, self.page_width, self.page_height, self.effective_margins())
+        rectangles = layout_rectangles(
+            template,
+            self.page_width,
+            self.page_height,
+            self.effective_margins(),
+            gap,
+            width_percent,
+            height_percent,
+        )
         for index, (x, y, width, height) in enumerate(rectangles):
             data = PhotoElement(
                 photo_path=paths[index] if index < len(paths) else "",
@@ -483,7 +515,12 @@ class DocumentScene(QGraphicsScene):
         previous = self.show_guides
         self.show_guides = False
         self.clearSelection()
-        self.render(painter, QRectF(0, 0, width_px, height_px), self.sceneRect(), Qt.AspectRatioMode.IgnoreAspectRatio)
+        self.render(
+            painter,
+            QRectF(0, 0, width_px, height_px),
+            self.paper_rect,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+        )
         self.show_guides = previous
         painter.end()
         return image

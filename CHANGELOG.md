@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0 — 2026-09-02
+
+- Mengabaikan kolom kosong dan placeholder garis (`-`, en dash, em dash) pada
+  validasi duplikasi nomor serta materi perjalanan.
+- Membersihkan indeks nomor lama yang hanya berisi placeholder garis.
+- Membuat form Perjalanan Dinas responsif tanpa scroll horizontal dan
+  memperbesar daftar tujuan agar empat sampai lima tujuan terlihat sekaligus.
+- Memisahkan batas kertas dari area kerja kanvas agar ukuran dan rasio A4/F4/
+  Letter/Legal terlihat jelas melalui border serta bayangan halaman.
+- Menambahkan Studio Auto Kolase dengan preview foto nyata, kartu mini-preview
+  setiap template, dan estimasi jumlah halaman sebelum diterapkan.
+- Menambahkan kontrol lebar, tinggi, serta jarak seluruh kumpulan foto dengan
+  satuan persen dan milimeter.
+- Mengganti crop berbasis slider menjadi crop interaktif bergaya Canva: frame
+  tetap, drag posisi foto, wheel zoom, rotasi, reset, dan slider sinkron.
+- Menjaga posisi relatif elemen ketika ukuran atau orientasi kertas berubah.
+
 ## 0.6.0 — 2026-08-31
 
 - Menyelesaikan audit paritas engine surat terhadap source SIPS lama.

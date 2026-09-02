@@ -98,6 +98,7 @@ class DocumentPage:
     title: str = "Halaman 1"
     elements: list[dict[str, Any]] = field(default_factory=list)
     background: str = "#ffffff"
+    collage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -144,6 +145,7 @@ class DocumentProject:
                     title=raw_page.get("title") or f"Halaman {index + 1}",
                     elements=list(raw_page.get("elements") or []),
                     background=raw_page.get("background", "#ffffff"),
+                    collage=dict(raw_page.get("collage") or {}),
                 )
             )
         project = cls(
@@ -318,6 +320,16 @@ class DocumentProject:
                     id=str(raw_page.get("id") or new_id("page")),
                     title=str(raw_page.get("title") or f"Halaman {page_index + 1}"),
                     elements=elements,
+                    collage={
+                        "template_id": str((raw_grids[0] if raw_grids else {}).get("templateId", "")),
+                        "gap_mm": float((raw_grids[0] if raw_grids else {}).get("gapMm", 3.0)),
+                        "width_percent": float((raw_grids[0] if raw_grids else {}).get("widthPercent", 100.0)),
+                        "height_percent": min(
+                            100.0,
+                            float((raw_grids[0] if raw_grids else {}).get("heightPx", canvas_height))
+                            / max(1.0, canvas_height) * 100.0,
+                        ),
+                    } if raw_grids else {},
                 )
             )
 

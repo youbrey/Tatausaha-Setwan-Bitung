@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -11,6 +12,23 @@ MONTHS_ID = (
     "Juli", "Agustus", "September", "Oktober", "November", "Desember",
 )
 DAYS_ID = ("Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu")
+
+
+def normalize_form_value(value: object) -> str:
+    """Rapikan nilai form dan abaikan placeholder kosong berbentuk garis.
+
+    Operator lazim memakai ``-`` untuk menandai kolom yang tidak digunakan.
+    Nilai seperti itu bukan nomor, dasar, atau materi yang sengaja diisi dan
+    karena itu tidak boleh ikut ke indeks pemeriksaan duplikasi.
+    """
+    text = " ".join(str(value or "").split())
+    if not text or re.fullmatch(r"[-\u2012\u2013\u2014\u2015\s]+", text):
+        return ""
+    return text
+
+
+def has_form_value(value: object) -> bool:
+    return bool(normalize_form_value(value))
 
 
 def format_date_id(value: date | str | None) -> str:
@@ -70,9 +88,9 @@ class TravelFormData:
             raise ValueError("Mode perjalanan dinas tidak valid.")
         if self.end_date < self.start_date:
             raise ValueError("Tanggal selesai tidak boleh sebelum tanggal mulai.")
-        if not self.travel_type.strip():
+        if not has_form_value(self.travel_type):
             raise ValueError("Jenis perjalanan wajib dipilih.")
-        if not self.subject.strip():
+        if not has_form_value(self.subject):
             raise ValueError("Materi/agenda kegiatan wajib diisi.")
         if not self.destinations:
             raise ValueError("Tambahkan minimal satu tujuan perjalanan.")
@@ -114,21 +132,21 @@ class TravelFormData:
         missing_numbers = [
             label
             for key, label in self.required_document_numbers().items()
-            if not self.document_numbers.get(key, "").strip()
+            if not has_form_value(self.document_numbers.get(key, ""))
         ]
         if missing_numbers:
             raise ValueError("Nomor dokumen wajib diisi: " + ", ".join(missing_numbers) + ".")
-        if not self.notice_subject.strip():
+        if not has_form_value(self.notice_subject):
             raise ValueError("Isi Surat Pemberitahuan wajib diisi.")
         if self.mode == "dprd" and self.dprd:
-            if not self.basis_dprd.strip():
+            if not has_form_value(self.basis_dprd):
                 raise ValueError("Dasar Surat Tugas DPRD wajib diisi.")
-            if not self.signer_dprd.strip() or self.signer_dprd.strip() == "-":
+            if not has_form_value(self.signer_dprd):
                 raise ValueError("Penandatangan DPRD wajib dipilih.")
         if (self.mode == "dprd" and self.asn) or self.mode == "setwan":
-            if not self.basis_asn.strip():
+            if not has_form_value(self.basis_asn):
                 raise ValueError("Dasar Surat Tugas ASN wajib diisi.")
-            if not self.signer_asn.strip() or self.signer_asn.strip() == "-":
+            if not has_form_value(self.signer_asn):
                 raise ValueError("Penandatangan ASN/SPD wajib dipilih.")
 
     def to_payload(self) -> dict[str, Any]:
@@ -169,19 +187,19 @@ class InvitationFormData:
         """Validasi minimum agar Live Preview tidak menunggu nomor final."""
         if self.invitation_type not in {"paripurna", "biasa"}:
             raise ValueError("Jenis undangan tidak valid.")
-        if not self.agenda.strip():
+        if not has_form_value(self.agenda):
             raise ValueError("Isi surat/agenda rapat wajib diisi.")
-        if not self.time_text.strip():
+        if not has_form_value(self.time_text):
             raise ValueError("Jam pelaksanaan wajib diisi.")
-        if self.invitation_type == "biasa" and not self.meeting_executor.strip():
+        if self.invitation_type == "biasa" and not has_form_value(self.meeting_executor):
             raise ValueError("Pelaksana rapat wajib diisi.")
 
     def validate(self) -> None:
         """Validasi final undangan dan dokumen pendukung yang dipilih."""
         self.validate_preview()
-        if not self.number.strip():
+        if not has_form_value(self.number):
             raise ValueError("Nomor undangan wajib diisi.")
-        if not self.signer.strip() or self.signer.strip() == "-":
+        if not has_form_value(self.signer):
             raise ValueError("Penandatangan undangan wajib dipilih.")
         if self.invitation_type == "paripurna":
             if not self.clothing.strip():

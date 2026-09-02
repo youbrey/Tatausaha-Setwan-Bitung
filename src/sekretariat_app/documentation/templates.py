@@ -70,16 +70,25 @@ def layout_rectangles(
     page_height: float,
     margins: tuple[float, float, float, float],
     gap: float = 3.0,
+    width_percent: float = 100.0,
+    height_percent: float = 100.0,
 ) -> list[tuple[float, float, float, float]]:
     top, right, bottom, left = margins
-    usable_width = max(20.0, page_width - left - right)
-    usable_height = max(20.0, page_height - top - bottom)
+    printable_width = max(20.0, page_width - left - right)
+    printable_height = max(20.0, page_height - top - bottom)
+    width_percent = max(25.0, min(100.0, float(width_percent)))
+    height_percent = max(25.0, min(100.0, float(height_percent)))
+    usable_width = printable_width * width_percent / 100.0
+    usable_height = printable_height * height_percent / 100.0
+    grid_left = left + (printable_width - usable_width) / 2.0
+    grid_top = top + (printable_height - usable_height) / 2.0
+    gap = max(0.0, min(float(gap), usable_width / max(1, template.columns * 2)))
     column_width = (usable_width - gap * (template.columns - 1)) / template.columns
     row_height = (usable_height - gap * (template.rows - 1)) / template.rows
     result: list[tuple[float, float, float, float]] = []
     for cell in template.cells:
-        x = left + cell.column * (column_width + gap)
-        y = top + cell.row * (row_height + gap)
+        x = grid_left + cell.column * (column_width + gap)
+        y = grid_top + cell.row * (row_height + gap)
         width = column_width * cell.column_span + gap * (cell.column_span - 1)
         height = row_height * cell.row_span + gap * (cell.row_span - 1)
         result.append((x, y, width, height))

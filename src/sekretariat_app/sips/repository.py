@@ -5,7 +5,12 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable
 
-from sekretariat_app.sips.models import DocumentRecord, new_record_id, now_iso
+from sekretariat_app.sips.models import (
+    DocumentRecord,
+    new_record_id,
+    normalize_form_value,
+    now_iso,
+)
 
 
 class SIPSRepository:
@@ -54,6 +59,12 @@ class SIPSRepository:
                 );
                 """
             )
+            # Bersihkan indeks lama yang terbentuk saat ``-`` masih dianggap
+            # sebagai nomor dokumen yang valid.
+            database.execute(
+                "DELETE FROM sips_document_numbers "
+                "WHERE TRIM(number) IN ('', '-', '--', '\u2012', '\u2013', '\u2014', '\u2015')"
+            )
 
     def save(
         self,
@@ -74,7 +85,11 @@ class SIPSRepository:
     ) -> str:
         record_id = record_id or new_record_id()
         timestamp = now_iso()
-        numbers = {label: value.strip() for label, value in (numbers or {}).items() if value and value.strip()}
+        numbers = {
+            label: cleaned
+            for label, value in (numbers or {}).items()
+            if (cleaned := normalize_form_value(value))
+        }
         with self._connect() as database:
             existing = database.execute("SELECT created_at FROM sips_documents WHERE id = ?", (record_id,)).fetchone()
             created_at = existing["created_at"] if existing else timestamp
@@ -129,7 +144,7 @@ class SIPSRepository:
         return record_id
 
     def validate_numbers(self, numbers: dict[str, str], record_id: str | None = None) -> None:
-        clean = [value.strip() for value in numbers.values() if value and value.strip()]
+        clean = [cleaned for value in numbers.values() if (cleaned := normalize_form_value(value))]
         if len(clean) != len({value.casefold() for value in clean}):
             raise ValueError("Satu nomor surat tidak boleh dipakai untuk dua jenis dokumen pada formulir yang sama.")
         if not clean:
@@ -151,7 +166,7 @@ class SIPSRepository:
         record_id: str | None = None,
     ) -> DocumentRecord | None:
         """Cari materi perjalanan yang sama setelah kapital/spasi dinormalisasi."""
-        normalized = " ".join(str(title or "").casefold().split())
+        normalized = normalize_form_value(title).casefold()
         if len(normalized) < 6:
             return None
         clauses = ["record_type LIKE 'travel_%'"]
@@ -163,7 +178,7 @@ class SIPSRepository:
         with self._connect() as database:
             rows = database.execute(query, parameters).fetchall()
         for row in rows:
-            if " ".join(str(row["title"] or "").casefold().split()) == normalized:
+            if normalize_form_value(row["title"]).casefold() == normalized:
                 return self._to_record(row)
         return None
 
