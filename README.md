@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.9.0 — Tujuan dinamis dan penomoran Undangan Biasa**.
+Versi source saat ini: **0.10.0 — Live Preview responsif dan hemat memori**.
 
 ## Menu aplikasi
 

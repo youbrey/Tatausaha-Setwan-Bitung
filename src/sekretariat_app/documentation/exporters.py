@@ -34,10 +34,13 @@ class DocumentationExporter:
         files: list[Path] = []
         stem = self._safe_name(project.title)
         for index in range(len(project.pages)):
-            image = self._scene_for_page(project, index).render_image(dpi)
+            scene = self._scene_for_page(project, index)
+            image = scene.render_image(dpi)
             target = target_dir / f"{stem}-halaman-{index + 1:02d}.png"
             if not image.save(str(target), "PNG"):
                 raise OSError(f"Gagal menulis {target}")
+            scene.clear()
+            del image
             files.append(target)
         return files
 
@@ -53,8 +56,9 @@ class DocumentationExporter:
         for index in range(len(project.pages)):
             if index:
                 writer.newPage()
-            image = self._scene_for_page(project, index).render_image(dpi)
-            painter.drawImage(QRectF(0, 0, writer.width(), writer.height()), image)
+            scene = self._scene_for_page(project, index)
+            scene.render_to_painter(painter, QRectF(0, 0, writer.width(), writer.height()))
+            scene.clear()
         painter.end()
         return target
 
@@ -106,9 +110,10 @@ class DocumentationExporter:
         for index in range(len(project.pages)):
             if index:
                 printer.newPage()
-            image = self._scene_for_page(project, index).render_image(min(300, printer.resolution()))
+            scene = self._scene_for_page(project, index)
             target_rect = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
-            painter.drawImage(target_rect, image)
+            scene.render_to_painter(painter, target_rect)
+            scene.clear()
         painter.end()
         return True
 

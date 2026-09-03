@@ -5,7 +5,17 @@ from importlib.resources import files
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, QSize, QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QImageReader,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+    QTransform,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -48,6 +58,22 @@ from sekretariat_app.documentation.templates import TEMPLATES, layout_rectangles
 IMAGE_FILTER = "Gambar (*.jpg *.jpeg *.png *.webp *.bmp)"
 
 
+def _scaled_pixmap(path: str, maximum: QSize) -> QPixmap:
+    """Decode gambar langsung pada resolusi preview, bukan resolusi kamera."""
+
+    if not path or not Path(path).exists():
+        return QPixmap()
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    original = reader.size()
+    if original.isValid() and (
+        original.width() > maximum.width() or original.height() > maximum.height()
+    ):
+        reader.setScaledSize(original.scaled(maximum, Qt.AspectRatioMode.KeepAspectRatio))
+    image = reader.read()
+    return QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+
+
 def _template_icon(template_id: str, size: QSize = QSize(184, 104)) -> QIcon:
     """Buat mini-preview kisi tanpa bergantung pada aset gambar eksternal."""
     template = template_by_id(template_id)
@@ -84,7 +110,7 @@ class CanvasView(QGraphicsView):
             | QPainter.RenderHint.SmoothPixmapTransform
         )
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.setBackgroundBrush(QColor("#cbd5e1"))
 
     def wheelEvent(self, event) -> None:
@@ -130,7 +156,9 @@ class CropPreview(QWidget):
         self.fit = "cover"
         self.image_rotation = 0
         self._drag_position = None
-        self._pixmap = QPixmap(photo_path)
+        self._pixmap = _scaled_pixmap(photo_path, QSize(2048, 2048))
+        self._rotated_pixmap = QPixmap()
+        self._cached_rotation = -1
         self.setMinimumSize(560, 360)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
@@ -152,10 +180,13 @@ class CropPreview(QWidget):
     def _display_pixmap(self) -> QPixmap:
         if self._pixmap.isNull() or not self.image_rotation:
             return self._pixmap
-        return self._pixmap.transformed(
-            QTransform().rotate(self.image_rotation),
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        if self._cached_rotation != self.image_rotation:
+            self._rotated_pixmap = self._pixmap.transformed(
+                QTransform().rotate(self.image_rotation),
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._cached_rotation = self.image_rotation
+        return self._rotated_pixmap
 
     def _frame_rect(self) -> QRectF:
         available = QRectF(self.rect()).adjusted(34, 28, -34, -28)
@@ -539,16 +570,23 @@ class AutoCollageDialog(QDialog):
             next((index for index, template in enumerate(TEMPLATES) if template.template_id == "grid-4"), 0),
         )
         self.template_list.setCurrentRow(preferred)
-        self.template_list.currentItemChanged.connect(self._render_preview)
-        self.gap.valueChanged.connect(self._render_preview)
-        self.width_percent.valueChanged.connect(self._render_preview)
-        self.height_percent.valueChanged.connect(self._render_preview)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(90)
+        self._preview_timer.timeout.connect(self._render_preview)
+        self.template_list.currentItemChanged.connect(self._schedule_preview)
+        self.gap.valueChanged.connect(self._schedule_preview)
+        self.width_percent.valueChanged.connect(self._schedule_preview)
+        self.height_percent.valueChanged.connect(self._schedule_preview)
         self._render_preview()
 
     @property
     def template_id(self) -> str:
         item = self.template_list.currentItem()
         return str(item.data(Qt.ItemDataRole.UserRole)) if item else "grid-4"
+
+    def _schedule_preview(self, *_args) -> None:
+        self._preview_timer.start()
 
     def _render_preview(self, *_args) -> None:
         template = template_by_id(self.template_id)
@@ -569,14 +607,14 @@ class AutoCollageDialog(QDialog):
             height_percent=self.height_percent.value(),
         )
         image = scene.render_image(72)
-        self.preview.setPixmap(
-            QPixmap.fromImage(image).scaled(
-                max(1, self.preview.width() - 24),
-                max(1, self.preview.height() - 24),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        pixmap = QPixmap.fromImage(image).scaled(
+            max(1, self.preview.width() - 24),
+            max(1, self.preview.height() - 24),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        scene.clear()
+        self.preview.setPixmap(pixmap)
         pages = max(1, (len(self.project.media) + len(template.cells) - 1) // len(template.cells))
         self.preview_summary.setText(
             f"{template.name} · {len(template.cells)} foto/halaman · estimasi {pages} halaman"
@@ -621,8 +659,10 @@ class PreviewDialog(QDialog):
         self._render()
 
     def _render(self) -> None:
-        image = self.exporter._scene_for_page(self.project, self.index).render_image(110)
+        scene = self.exporter._scene_for_page(self.project, self.index)
+        image = scene.render_image(110)
         self.label.setPixmap(QPixmap.fromImage(image))
+        scene.clear()
         self.counter.setText(f"Halaman {self.index + 1} dari {len(self.project.pages)}")
 
 
@@ -638,6 +678,11 @@ class DocumentationPhotoPage(QWidget):
         self.history: list[str] = []
         self.history_index = -1
         self._restoring = False
+        self._thumbnail_cache: dict[str, tuple[int, QIcon]] = {}
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(650)
+        self._autosave_timer.timeout.connect(self._write_autosave)
         self._build_ui()
         self._connect_shortcuts()
         self._load_autosave()
@@ -1252,7 +1297,7 @@ class DocumentationPhotoPage(QWidget):
         self._schedule_autosave()
 
     def _schedule_autosave(self) -> None:
-        QTimer.singleShot(650, self._write_autosave)
+        self._autosave_timer.start()
 
     def _write_autosave(self) -> None:
         try:
@@ -1267,7 +1312,7 @@ class DocumentationPhotoPage(QWidget):
             return
         del self.history[self.history_index + 1 :]
         self.history.append(snapshot)
-        if len(self.history) > 60:
+        if len(self.history) > 30:
             self.history.pop(0)
         self.history_index = len(self.history) - 1
         self._update_history_buttons()
@@ -1485,8 +1530,23 @@ class DocumentationPhotoPage(QWidget):
 
     def _refresh_media(self) -> None:
         self.media_list.clear()
+        current_paths = set(self.project.media)
+        self._thumbnail_cache = {
+            path: cached
+            for path, cached in self._thumbnail_cache.items()
+            if path in current_paths
+        }
         for path in self.project.media:
-            item = QListWidgetItem(QIcon(path), Path(path).name)
+            source = Path(path)
+            try:
+                modified = source.stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            cached = self._thumbnail_cache.get(path)
+            if cached is None or cached[0] != modified:
+                cached = (modified, QIcon(_scaled_pixmap(path, QSize(160, 120))))
+                self._thumbnail_cache[path] = cached
+            item = QListWidgetItem(cached[1], source.name)
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setToolTip(path)
             self.media_list.addItem(item)

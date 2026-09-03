@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
 import os
 from datetime import date
 from pathlib import Path
@@ -85,6 +87,18 @@ def _set_date(widget: QDateEdit, value: date) -> None:
 
 def _lines(editor: QPlainTextEdit) -> list[str]:
     return [line.strip() for line in editor.toPlainText().splitlines() if line.strip()]
+
+
+def _preview_state_key(payload: dict[str, Any]) -> str:
+    """Sidik jari stabil untuk mencegah render ulang dari sinyal UI duplikat."""
+
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.blake2s(serialized, digest_size=16).hexdigest()
 
 
 def _open_path(path: str | Path) -> None:
@@ -608,7 +622,14 @@ class TravelPage(QWidget):
             self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
             return
         self.live_preview.schedule(
-            lambda output, current=data: self.service.generate_travel(current, output, preview=True)
+            lambda output, document, current=data: self.service.generate_travel(
+                current,
+                output,
+                preview=True,
+                preview_document=document,
+            ),
+            _preview_state_key(data.to_payload()),
+            self.service.travel_preview_documents(data),
         )
 
     def _check_duplicate_title(self) -> None:
@@ -1122,7 +1143,14 @@ class InvitationPage(QWidget):
             self.live_preview.show_waiting(f"Live preview menunggu: {exc}")
             return
         self.live_preview.schedule(
-            lambda output, current=data: self.service.generate_invitation(current, output, preview=True)
+            lambda output, document, current=data: self.service.generate_invitation(
+                current,
+                output,
+                preview=True,
+                preview_document=document,
+            ),
+            _preview_state_key(data.to_payload()),
+            self.service.invitation_preview_documents(data),
         )
 
     def _generate_support_document(self, kind: str) -> None:

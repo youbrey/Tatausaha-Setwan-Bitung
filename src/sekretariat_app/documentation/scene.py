@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
     QImage,
+    QImageReader,
     QPainter,
     QPainterPath,
     QPen,
@@ -42,6 +44,8 @@ class PhotoItem(QGraphicsObject):
         self._rect = QRectF(0, 0, float(data.get("width", 80)), float(data.get("height", 60)))
         self._pixmap = QPixmap()
         self._loaded_path = ""
+        self._loaded_rotation = -1
+        self._loaded_target = QSize()
         self._resizing = False
         self._start_rect = QRectF()
         self.setPos(float(data.get("x", 20)), float(data.get("y", 20)))
@@ -65,14 +69,70 @@ class PhotoItem(QGraphicsObject):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.update()
 
-    def _load_pixmap(self) -> QPixmap:
+    def _required_pixmap_size(self, painter: QPainter) -> QSize:
+        transform = painter.worldTransform()
+        scale_x = max(0.1, math.hypot(transform.m11(), transform.m12()))
+        scale_y = max(0.1, math.hypot(transform.m21(), transform.m22()))
+        zoom = max(1.0, min(5.0, float(self.data.get("zoom", 1.0))))
+        width = max(64, math.ceil(self._rect.width() * scale_x * zoom * 1.15))
+        height = max(64, math.ceil(self._rect.height() * scale_y * zoom * 1.15))
+        if int(self.data.get("image_rotation", 0)) % 180:
+            width, height = height, width
+        # Bucket mencegah decode ulang saat zoom/resize hanya berubah sedikit.
+        width = min(4096, math.ceil(width / 256) * 256)
+        height = min(4096, math.ceil(height / 256) * 256)
+        return QSize(width, height)
+
+    def _load_pixmap(self, painter: QPainter) -> QPixmap:
         path = str(self.data.get("photo_path", ""))
-        if path != self._loaded_path:
-            self._loaded_path = path
-            self._pixmap = QPixmap(path) if path and Path(path).exists() else QPixmap()
         rotation = int(self.data.get("image_rotation", 0)) % 360
-        if rotation and not self._pixmap.isNull():
-            return self._pixmap.transformed(QTransform().rotate(rotation), Qt.TransformationMode.SmoothTransformation)
+        target = self._required_pixmap_size(painter)
+        cache_is_sufficient = (
+            path == self._loaded_path
+            and rotation == self._loaded_rotation
+            and self._loaded_target.width() >= target.width()
+            and self._loaded_target.height() >= target.height()
+        )
+        if cache_is_sufficient:
+            return self._pixmap
+
+        self._loaded_path = path
+        self._loaded_rotation = rotation
+        self._loaded_target = target
+        self._pixmap = QPixmap()
+        if not path or not Path(path).exists():
+            return self._pixmap
+
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        original = reader.size()
+        if original.isValid() and original.width() > 0 and original.height() > 0:
+            scale = min(
+                1.0,
+                max(
+                    target.width() / original.width(),
+                    target.height() / original.height(),
+                ),
+            )
+            scaled_width = max(1, round(original.width() * scale))
+            scaled_height = max(1, round(original.height() * scale))
+            largest = max(scaled_width, scaled_height)
+            if largest > 4096:
+                limit = 4096 / largest
+                scaled_width = max(1, round(scaled_width * limit))
+                scaled_height = max(1, round(scaled_height * limit))
+            if scaled_width < original.width() or scaled_height < original.height():
+                reader.setScaledSize(QSize(scaled_width, scaled_height))
+        image = reader.read()
+        if image.isNull():
+            return self._pixmap
+        pixmap = QPixmap.fromImage(image)
+        if rotation:
+            pixmap = pixmap.transformed(
+                QTransform().rotate(rotation),
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        self._pixmap = pixmap
         return self._pixmap
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
@@ -86,7 +146,7 @@ class PhotoItem(QGraphicsObject):
         painter.save()
         painter.setClipPath(clip)
         painter.fillRect(rect, QColor("#e2e8f0"))
-        pixmap = self._load_pixmap()
+        pixmap = self._load_pixmap(painter)
         if pixmap.isNull():
             painter.setPen(QColor("#64748b"))
             placeholder_font = QFont("Segoe UI")
@@ -512,15 +572,22 @@ class DocumentScene(QGraphicsScene):
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        self.render_to_painter(painter, QRectF(0, 0, width_px, height_px))
+        painter.end()
+        return image
+
+    def render_to_painter(self, painter: QPainter, target: QRectF) -> None:
+        """Render langsung ke PDF/printer agar tidak membuat bitmap satu halaman."""
+
         previous = self.show_guides
         self.show_guides = False
         self.clearSelection()
-        self.render(
-            painter,
-            QRectF(0, 0, width_px, height_px),
-            self.paper_rect,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-        )
-        self.show_guides = previous
-        painter.end()
-        return image
+        try:
+            self.render(
+                painter,
+                target,
+                self.paper_rect,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+            )
+        finally:
+            self.show_guides = previous

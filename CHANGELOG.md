@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0 — 2026-09-03
+
+- Mengubah Live Preview SIPS menjadi lazy render: hanya dokumen yang sedang
+  dipilih yang dibuat, bukan seluruh paket surat pada setiap perubahan form.
+- Menambahkan sidik jari state untuk mencegah render duplikat dan pembatalan
+  kooperatif agar request lama tidak meneruskan konversi PDF setelah usang.
+- Mempertahankan pilihan jenis dokumen ketika nama file berubah serta membuka
+  kembali PDF cache tanpa regenerasi saat halaman menu ditampilkan lagi.
+- Menghapus tahap encode/decode PNG pada raster PDF, membatasi alokasi bitmap
+  preview, dan merender ulang ukuran tampilan melalui debounce saat panel diubah.
+- Mendecode foto sesuai kebutuhan resolusi kanvas/ekspor, menyimpan hasil
+  rotasi, menggunakan thumbnail kecil, dan melepas bitmap setelah setiap
+  halaman selesai diekspor.
+- Merender PDF dan printer langsung dari scene dokumen tanpa membuat bitmap
+  penuh per halaman, sehingga penggunaan RAM tetap stabil pada dokumen panjang.
+- Mengurangi repaint kanvas Dokumentasi Foto, menyatukan request autosave dan
+  preview kolase yang beruntun, serta membatasi riwayat undo menjadi 30 state.
+
 ## 0.9.0 — 2026-09-03
 
 - Mengganti input tujuan surat lainnya pada Undangan Biasa menjadi editor
