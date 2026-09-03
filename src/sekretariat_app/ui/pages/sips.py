@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -776,6 +775,166 @@ class TravelPage(QWidget):
             self._update_duration()
 
 
+class AdditionalDestinationEditor(QWidget):
+    """Editor tujuan surat tambahan yang dikelompokkan per halaman dokumen."""
+
+    changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._groups: list[dict[str, Any]] = []
+        self._loading = False
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+
+        self.add_page_button = QPushButton("+ Tambah Halaman Tujuan")
+        self.add_page_button.setToolTip("Tambahkan halaman baru jika daftar tujuan tidak muat dalam satu halaman")
+        self.add_page_button.clicked.connect(lambda: self._add_page())
+        self._layout.addWidget(self.add_page_button)
+        self._add_page(emit=False)
+
+    def _emit_changed(self, *_args) -> None:
+        if not self._loading:
+            self.changed.emit()
+
+    def _add_page(self, destinations: list[str] | None = None, *, emit: bool = True) -> None:
+        frame = QFrame()
+        frame.setObjectName("DestinationPageCard")
+        frame.setStyleSheet(
+            "QFrame#DestinationPageCard {"
+            "background: #f8fafc; border: 1px solid #dbe4f0; border-radius: 8px;"
+            "}"
+        )
+        page_layout = QVBoxLayout(frame)
+        page_layout.setContentsMargins(10, 8, 10, 10)
+        page_layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        title = QLabel()
+        title.setStyleSheet("font-weight: 600; color: #334155; border: none;")
+        header.addWidget(title, 1)
+        page_layout.addLayout(header)
+
+        entries_host = QWidget()
+        entries_layout = QVBoxLayout(entries_host)
+        entries_layout.setContentsMargins(0, 0, 0, 0)
+        entries_layout.setSpacing(5)
+        page_layout.addWidget(entries_host)
+
+        add_destination = QPushButton("+ Tambah Tujuan di Halaman Ini")
+        page_layout.addWidget(add_destination)
+        group: dict[str, Any] = {
+            "frame": frame,
+            "title": title,
+            "entries_layout": entries_layout,
+            "entries": [],
+        }
+        self._groups.append(group)
+        self._layout.insertWidget(self._layout.count() - 1, frame)
+
+        if len(self._groups) > 1:
+            remove_page = QPushButton("Hapus Halaman")
+            remove_page.setToolTip("Hapus halaman tujuan tambahan ini")
+            remove_page.clicked.connect(lambda _checked=False, current=group: self._remove_page(current))
+            header.addWidget(remove_page)
+
+        add_destination.clicked.connect(
+            lambda _checked=False, current=group: self._add_destination(current)
+        )
+        values = destinations if destinations else [""]
+        for value in values:
+            self._add_destination(group, value, emit=False)
+        self._refresh_page_titles()
+        if emit:
+            self._emit_changed()
+
+    def _add_destination(self, group: dict[str, Any], value: str = "", *, emit: bool = True) -> None:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        editor = QLineEdit(value)
+        editor.setPlaceholderText("Contoh: CAMAT BITUNG UTARA")
+        remove = QPushButton("×")
+        remove.setFixedWidth(34)
+        remove.setToolTip("Hapus tujuan ini")
+        row_layout.addWidget(editor, 1)
+        row_layout.addWidget(remove)
+        entry = {"row": row, "editor": editor}
+        group["entries"].append(entry)
+        group["entries_layout"].addWidget(row)
+        editor.textChanged.connect(self._emit_changed)
+        remove.clicked.connect(
+            lambda _checked=False, current_group=group, current_entry=entry: self._remove_destination(
+                current_group, current_entry
+            )
+        )
+        if emit:
+            editor.setFocus()
+            self._emit_changed()
+
+    def _remove_destination(self, group: dict[str, Any], entry: dict[str, Any]) -> None:
+        if entry not in group["entries"]:
+            return
+        group["entries"].remove(entry)
+        entry["row"].setParent(None)
+        entry["row"].deleteLater()
+        if not group["entries"]:
+            self._add_destination(group, emit=False)
+        self._emit_changed()
+
+    def _remove_page(self, group: dict[str, Any]) -> None:
+        if group not in self._groups or self._groups.index(group) == 0:
+            return
+        self._groups.remove(group)
+        group["frame"].setParent(None)
+        group["frame"].deleteLater()
+        self._refresh_page_titles()
+        self._emit_changed()
+
+    def _refresh_page_titles(self) -> None:
+        for index, group in enumerate(self._groups):
+            if index == 0:
+                label = "Halaman ke-4 (utama)"
+            else:
+                label = f"Halaman tujuan tambahan #{index}"
+            group["title"].setText(label)
+
+    def pages(self) -> list[list[str]]:
+        pages: list[list[str]] = []
+        for group in self._groups:
+            destinations = [
+                entry["editor"].text().strip()
+                for entry in group["entries"]
+                if entry["editor"].text().strip()
+            ]
+            if destinations:
+                pages.append(destinations)
+        return pages
+
+    def set_pages(self, pages: list[list[str]] | None) -> None:
+        self._loading = True
+        try:
+            for group in self._groups:
+                group["frame"].setParent(None)
+                group["frame"].deleteLater()
+            self._groups.clear()
+            clean_pages = [
+                [str(destination).strip() for destination in page if str(destination).strip()]
+                for page in (pages or [])
+            ]
+            clean_pages = [page for page in clean_pages if page]
+            for page in clean_pages or [[]]:
+                self._add_page(page, emit=False)
+        finally:
+            self._loading = False
+        self.changed.emit()
+
+    def clear(self) -> None:
+        self.set_pages([])
+
+
 class InvitationPage(QWidget):
     changed = Signal()
 
@@ -816,7 +975,7 @@ class InvitationPage(QWidget):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(12)
         self.number = QLineEdit()
-        self.number.setPlaceholderText("Nomor awal undangan")
+        self.number.setPlaceholderText("Contoh: 005/DPRD/100/IX/2026")
         self.letter_date = _date_edit()
         self.meeting_date = _date_edit()
         self.day_label = QLabel(day_name_id(date.today()))
@@ -864,11 +1023,7 @@ class InvitationPage(QWidget):
             self.related_parties = QPlainTextEdit()
             self.related_parties.setPlaceholderText("Satu pihak terkait per baris")
             self.related_parties.setMinimumHeight(100)
-            self.other_pages = QPlainTextEdit()
-            self.other_pages.setPlaceholderText(
-                "Satu tujuan per baris. Pisahkan halaman tambahan dengan satu baris kosong."
-            )
-            self.other_pages.setMinimumHeight(110)
+            self.other_pages = AdditionalDestinationEditor()
             for label, widget in (
                 ("Pelaksana rapat", self.meeting_executor),
                 ("Jenis rapat", self.meeting_type),
@@ -952,7 +1107,7 @@ class InvitationPage(QWidget):
             self.meeting_executor.currentTextChanged.connect(self._schedule_live_preview)
             self.meeting_type.currentTextChanged.connect(self._schedule_live_preview)
             self.related_parties.textChanged.connect(self._schedule_live_preview)
-            self.other_pages.textChanged.connect(self._schedule_live_preview)
+            self.other_pages.changed.connect(self._schedule_live_preview)
 
     def _on_meeting_executor_selected(self, _index: int) -> None:
         if self.meeting_executor and self.meeting_executor.currentText() == PELAKSANA_RAPAT_CUSTOM:
@@ -997,14 +1152,7 @@ class InvitationPage(QWidget):
     def _parse_pages(self) -> list[list[str]]:
         if not self.other_pages:
             return []
-        text = self.other_pages.toPlainText().strip()
-        if not text:
-            return []
-        return [
-            [line.strip() for line in block.splitlines() if line.strip()]
-            for block in re.split(r"\n\s*\n", text)
-            if block.strip()
-        ]
+        return self.other_pages.pages()
 
     def collect(self) -> InvitationFormData:
         return InvitationFormData(
@@ -1108,7 +1256,7 @@ class InvitationPage(QWidget):
             self.meeting_executor.setCurrentText(data.meeting_executor)
             self.meeting_type.setCurrentText(data.meeting_type)
             self.related_parties.setPlainText("\n".join(data.related_parties))
-            self.other_pages.setPlainText("\n\n".join("\n".join(page) for page in data.other_destination_pages))
+            self.other_pages.set_pages(data.other_destination_pages)
         self.include_note.setChecked(data.include_official_note)
         self.include_attendance.setChecked(data.include_attendance)
         self.include_related.setChecked(data.include_related_attendance)

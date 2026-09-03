@@ -61,7 +61,6 @@ from sekretariat_app.sips.text_utils import (
     format_jabatan_penandatanganan,
     format_signature_position,
     generate_periods,
-    increment_nomor,
     increment_nomor_paripurna,
     is_in_sulawesi_utara,
     is_plain_region_name,
@@ -589,8 +588,10 @@ class SIPSService:
             context[f"pihak_terkait_{index}"] = value
         for index, value in enumerate(parties_mayor, start=1):
             context[f"pihak_terkait_wk_{index}"] = value
+        # Undangan biasa memakai pola nomor berurutan yang sama dengan
+        # Paripurna: segmen ketiga bertambah, segmen pertama dan kedua tetap.
         for index in range(4):
-            context[f"nomor_surat_rapat_{index + 1}"] = increment_nomor(data.number, index)
+            context[f"nomor_surat_rapat_{index + 1}"] = increment_nomor_paripurna(data.number, index)
 
         main_temporary = tempfile.NamedTemporaryFile(suffix=".docx", delete=False).name
         combined_files = [main_temporary]
@@ -609,7 +610,7 @@ class SIPSService:
                 for index, destinations in enumerate(extra_destinations):
                     extra_context = dict(context)
                     extra_context["tujuan_surat_lainnya"] = build_tujuan_richtext(destinations)
-                    extra_context["nomor_surat_rapat_4"] = increment_nomor(data.number, 4 + index)
+                    extra_context["nomor_surat_rapat_4"] = increment_nomor_paripurna(data.number, 4 + index)
                     temporary = tempfile.NamedTemporaryFile(suffix=".docx", delete=False).name
                     extra = DocxTemplate(extra_template)
                     extra.render(extra_context)

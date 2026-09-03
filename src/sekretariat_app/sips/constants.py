@@ -15,7 +15,7 @@ PELAKSANA_RAPAT_OPTIONS = [
 ]
 JENIS_RAPAT_OPTIONS = [
     "Rapat Kerja",
-    "RDPU (Rapat Dengar Pendapat Umum)",
+    "Rapat Dengar Pendapat Umum (RDPU)",
     "Rapat Internal",
     "Rapat Pansus",
 ]

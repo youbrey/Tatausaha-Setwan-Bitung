@@ -221,6 +221,8 @@ class InvitationFormData:
         data = dict(payload)
         data["letter_date"] = date.fromisoformat(str(data["letter_date"]))
         data["meeting_date"] = date.fromisoformat(str(data["meeting_date"]))
+        if data.get("meeting_type") == "RDPU (Rapat Dengar Pendapat Umum)":
+            data["meeting_type"] = "Rapat Dengar Pendapat Umum (RDPU)"
         return cls(**data)
 
 

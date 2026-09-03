@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 — 2026-09-03
+
+- Mengganti input tujuan surat lainnya pada Undangan Biasa menjadi editor
+  dinamis per halaman; pengguna dapat menambah/menghapus tujuan dan halaman
+  tanpa batas serta draft lama tetap dapat dimuat.
+- Menyamakan penomoran setiap halaman Undangan Biasa dengan Undangan
+  Paripurna: segmen ketiga nomor bertambah secara berurutan, termasuk seluruh
+  halaman tujuan tambahan.
+- Mengubah nama jenis rapat menjadi `Rapat Dengar Pendapat Umum (RDPU)` dan
+  menormalisasi nilai lama ketika draft dibuka kembali.
+
 ## 0.8.0 — 2026-09-02
 
 - Mengabaikan kolom kosong dan placeholder garis (`-`, en dash, em dash) pada
