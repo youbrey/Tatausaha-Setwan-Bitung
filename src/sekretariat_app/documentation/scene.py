@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsDropShadowEffect,
     QGraphicsObject,
+    QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsSceneMouseEvent,
     QGraphicsTextItem,
@@ -35,8 +36,20 @@ from sekretariat_app.documentation.templates import layout_rectangles, template_
 class PhotoItem(QGraphicsObject):
     changed = Signal()
     request_crop = Signal(object)
+    crop_state_changed = Signal(float, float, float)
 
     HANDLE = 4.0
+    MIN_SIZE = 12.0
+    _HANDLE_CURSORS = {
+        "top_left": Qt.CursorShape.SizeFDiagCursor,
+        "top": Qt.CursorShape.SizeVerCursor,
+        "top_right": Qt.CursorShape.SizeBDiagCursor,
+        "right": Qt.CursorShape.SizeHorCursor,
+        "bottom_right": Qt.CursorShape.SizeFDiagCursor,
+        "bottom": Qt.CursorShape.SizeVerCursor,
+        "bottom_left": Qt.CursorShape.SizeBDiagCursor,
+        "left": Qt.CursorShape.SizeHorCursor,
+    }
 
     def __init__(self, data: dict, parent: QGraphicsItem | None = None):
         super().__init__(parent)
@@ -46,8 +59,14 @@ class PhotoItem(QGraphicsObject):
         self._loaded_path = ""
         self._loaded_rotation = -1
         self._loaded_target = QSize()
-        self._resizing = False
+        self._resize_handle = ""
         self._start_rect = QRectF()
+        self._start_local_to_scene = QTransform()
+        self._start_scene_to_local = QTransform()
+        self._crop_mode = False
+        self._crop_original: dict[str, float | int | str] = {}
+        self._crop_drag_position: QPointF | None = None
+        self._crop_z_value = 0.0
         self.setPos(float(data.get("x", 20)), float(data.get("y", 20)))
         self.setRotation(float(data.get("rotation", 0)))
         self.setFlags(
@@ -60,13 +79,104 @@ class PhotoItem(QGraphicsObject):
         self.set_locked(bool(data.get("locked", False)))
 
     def boundingRect(self) -> QRectF:
-        extra = self.HANDLE + 1
-        return self._rect.adjusted(-1, -1, extra, extra)
+        bounds = QRectF(self._rect)
+        if self._crop_mode and not self._pixmap.isNull():
+            _source, visual, _max_x, _max_y = self._cover_geometry(self._pixmap, self._rect)
+            bounds = bounds.united(visual)
+        extra = self.HANDLE / 2.0 + 1.0
+        return bounds.adjusted(-extra, -extra, extra, extra)
 
     def set_locked(self, locked: bool) -> None:
         self.data["locked"] = locked
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not locked)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not locked and not self._crop_mode)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.update()
+
+    @property
+    def crop_mode(self) -> bool:
+        return self._crop_mode
+
+    def begin_crop(self) -> bool:
+        if self._crop_mode or self.data.get("locked") or not self.data.get("photo_path"):
+            return False
+        self._crop_original = {
+            "crop_x": float(self.data.get("crop_x", 0.5)),
+            "crop_y": float(self.data.get("crop_y", 0.5)),
+            "zoom": float(self.data.get("zoom", 1.0)),
+            "image_rotation": int(self.data.get("image_rotation", 0)),
+            "fit": str(self.data.get("fit", "cover")),
+        }
+        self.prepareGeometryChange()
+        self._crop_mode = True
+        self._crop_z_value = self.zValue()
+        self.setZValue(10_000.0)
+        self.data["fit"] = "cover"
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setSelected(True)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.update()
+        self.crop_state_changed.emit(
+            float(self.data.get("crop_x", 0.5)),
+            float(self.data.get("crop_y", 0.5)),
+            float(self.data.get("zoom", 1.0)),
+        )
+        return True
+
+    def finish_crop(self, commit: bool) -> None:
+        if not self._crop_mode:
+            return
+        self.prepareGeometryChange()
+        if not commit:
+            self.data.update(self._crop_original)
+            self._loaded_rotation = -1
+        self._crop_mode = False
+        self._crop_drag_position = None
+        self.setZValue(self._crop_z_value)
+        self.setFlag(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable,
+            not bool(self.data.get("locked", False)),
+        )
+        self.unsetCursor()
+        self.update()
+
+    def reset_crop(self) -> None:
+        if not self._crop_mode:
+            return
+        self.prepareGeometryChange()
+        self.data.update(crop_x=0.5, crop_y=0.5, zoom=1.0, fit="cover", image_rotation=0)
+        self._loaded_rotation = -1
+        self.update()
+        self.crop_state_changed.emit(0.5, 0.5, 1.0)
+
+    def set_crop_zoom(self, zoom: float) -> None:
+        if not self._crop_mode:
+            return
+        self.prepareGeometryChange()
+        self.data["zoom"] = max(1.0, min(5.0, float(zoom)))
+        self.update()
+        self.crop_state_changed.emit(
+            float(self.data.get("crop_x", 0.5)),
+            float(self.data.get("crop_y", 0.5)),
+            float(self.data["zoom"]),
+        )
+
+    def rotate_crop_image(self, degrees: int) -> None:
+        if not self._crop_mode:
+            return
+        self.prepareGeometryChange()
+        self.data["image_rotation"] = (int(self.data.get("image_rotation", 0)) + degrees) % 360
+        self.data.update(crop_x=0.5, crop_y=0.5)
+        self._loaded_rotation = -1
+        self.update()
+        self.crop_state_changed.emit(0.5, 0.5, float(self.data.get("zoom", 1.0)))
+
+    def set_frame_size(self, width: float, height: float) -> None:
+        width = max(self.MIN_SIZE, float(width))
+        height = max(self.MIN_SIZE, float(height))
+        if abs(width - self._rect.width()) < 0.001 and abs(height - self._rect.height()) < 0.001:
+            return
+        self.prepareGeometryChange()
+        self._rect = QRectF(0.0, 0.0, width, height)
         self.update()
 
     def _required_pixmap_size(self, painter: QPainter) -> QSize:
@@ -143,42 +253,73 @@ class PhotoItem(QGraphicsObject):
         clip = QPainterPath()
         clip.addRoundedRect(rect, radius, radius)
 
-        painter.save()
-        painter.setClipPath(clip)
-        painter.fillRect(rect, QColor("#e2e8f0"))
         pixmap = self._load_pixmap(painter)
-        if pixmap.isNull():
-            painter.setPen(QColor("#64748b"))
-            placeholder_font = QFont("Segoe UI")
-            placeholder_font.setPixelSize(4)
-            painter.setFont(placeholder_font)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Klik dua kali\nuntuk memilih foto")
+        if self._crop_mode and not pixmap.isNull():
+            self._paint_crop_mode(painter, pixmap, clip)
         else:
-            self._draw_photo(painter, pixmap, rect)
-        if self.data.get("show_caption") and self.data.get("caption"):
-            caption_height = min(12.0, rect.height() * 0.22)
-            caption_rect = QRectF(rect.left(), rect.bottom() - caption_height, rect.width(), caption_height)
-            painter.fillRect(caption_rect, QColor(15, 23, 42, 190))
-            painter.setPen(Qt.GlobalColor.white)
-            font = QFont("Arial")
-            font.setPixelSize(3)
-            painter.setFont(font)
-            painter.drawText(caption_rect.adjusted(2, 0, -2, 0), Qt.AlignmentFlag.AlignCenter, str(self.data["caption"]))
-        painter.restore()
+            painter.save()
+            painter.setClipPath(clip)
+            painter.fillRect(rect, QColor("#e2e8f0"))
+            if pixmap.isNull():
+                painter.setPen(QColor("#64748b"))
+                placeholder_font = QFont("Segoe UI")
+                placeholder_font.setPixelSize(4)
+                painter.setFont(placeholder_font)
+                painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Klik dua kali\nuntuk memilih foto")
+            else:
+                self._draw_photo(painter, pixmap, rect)
+            if self.data.get("show_caption") and self.data.get("caption"):
+                caption_height = min(12.0, rect.height() * 0.22)
+                caption_rect = QRectF(rect.left(), rect.bottom() - caption_height, rect.width(), caption_height)
+                painter.fillRect(caption_rect, QColor(15, 23, 42, 190))
+                painter.setPen(Qt.GlobalColor.white)
+                font = QFont("Arial")
+                font.setPixelSize(3)
+                painter.setFont(font)
+                painter.drawText(caption_rect.adjusted(2, 0, -2, 0), Qt.AlignmentFlag.AlignCenter, str(self.data["caption"]))
+            painter.restore()
 
         border_width = max(0.0, float(self.data.get("border_width", 0.5)))
-        if border_width:
+        if border_width and not self._crop_mode:
             painter.setPen(QPen(QColor(str(self.data.get("border_color", "#94a3b8"))), border_width))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect, radius, radius)
-        if self.isSelected():
-            painter.setPen(QPen(QColor("#0284c7"), 0.8, Qt.PenStyle.DashLine))
+        if self.isSelected() and not self._crop_mode:
+            painter.setPen(QPen(QColor("#0284c7"), 0.8))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(rect)
             if not self.data.get("locked"):
-                painter.setBrush(QColor("#0284c7"))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawRect(self._handle_rect())
+                painter.setBrush(QColor("#ffffff"))
+                painter.setPen(QPen(QColor("#0284c7"), 0.7))
+                for handle_rect in self._handle_rects().values():
+                    painter.drawRect(handle_rect)
+
+    def _paint_crop_mode(self, painter: QPainter, pixmap: QPixmap, clip: QPainterPath) -> None:
+        _source, visual, _max_x, _max_y = self._cover_geometry(pixmap, self._rect)
+        entire_source = QRectF(pixmap.rect())
+
+        painter.save()
+        painter.setOpacity(0.34)
+        painter.drawPixmap(visual, pixmap, entire_source)
+        painter.restore()
+
+        painter.save()
+        painter.setClipPath(clip)
+        painter.fillRect(self._rect, QColor("#111827"))
+        painter.drawPixmap(visual, pixmap, entire_source)
+        painter.restore()
+
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#22c55e"), 0.9))
+        painter.drawRect(self._rect)
+        painter.setPen(QPen(QColor(255, 255, 255, 150), 0.35, Qt.PenStyle.DashLine))
+        one_third_x = self._rect.width() / 3.0
+        one_third_y = self._rect.height() / 3.0
+        for step in (1, 2):
+            x = self._rect.left() + one_third_x * step
+            y = self._rect.top() + one_third_y * step
+            painter.drawLine(QPointF(x, self._rect.top()), QPointF(x, self._rect.bottom()))
+            painter.drawLine(QPointF(self._rect.left(), y), QPointF(self._rect.right(), y))
 
     def _draw_photo(self, painter: QPainter, pixmap: QPixmap, target: QRectF) -> None:
         fit = str(self.data.get("fit", "cover"))
@@ -198,12 +339,17 @@ class PhotoItem(QGraphicsObject):
             painter.drawPixmap(draw_rect, pixmap, source)
             return
 
+        source_rect, _visual, _max_x, _max_y = self._cover_geometry(pixmap, target)
+        painter.drawPixmap(target, pixmap, source_rect)
+
+    def _cover_geometry(self, pixmap: QPixmap, target: QRectF) -> tuple[QRectF, QRectF, float, float]:
+        source = QRectF(pixmap.rect())
+        source_aspect = source.width() / max(1.0, source.height())
+        target_aspect = target.width() / max(1.0, target.height())
         if source_aspect > target_aspect:
-            source_width = source.height() * target_aspect
-            source_height = source.height()
+            source_width, source_height = source.height() * target_aspect, source.height()
         else:
-            source_width = source.width()
-            source_height = source.width() / target_aspect
+            source_width, source_height = source.width(), source.width() / target_aspect
         zoom = max(1.0, min(5.0, float(self.data.get("zoom", 1.0))))
         source_width /= zoom
         source_height /= zoom
@@ -212,40 +358,143 @@ class PhotoItem(QGraphicsObject):
         crop_x = max(0.0, min(1.0, float(self.data.get("crop_x", 0.5))))
         crop_y = max(0.0, min(1.0, float(self.data.get("crop_y", 0.5))))
         source_rect = QRectF(max_x * crop_x, max_y * crop_y, source_width, source_height)
-        painter.drawPixmap(target, pixmap, source_rect)
+        scale_x = target.width() / max(1.0, source_rect.width())
+        scale_y = target.height() / max(1.0, source_rect.height())
+        visual = QRectF(
+            target.left() - source_rect.left() * scale_x,
+            target.top() - source_rect.top() * scale_y,
+            source.width() * scale_x,
+            source.height() * scale_y,
+        )
+        return source_rect, visual, max_x, max_y
 
-    def _handle_rect(self) -> QRectF:
-        return QRectF(self._rect.right() - self.HANDLE, self._rect.bottom() - self.HANDLE, self.HANDLE, self.HANDLE)
+    def _handle_rects(self) -> dict[str, QRectF]:
+        half = self.HANDLE / 2.0
+        left, center_x, right = self._rect.left(), self._rect.center().x(), self._rect.right()
+        top, center_y, bottom = self._rect.top(), self._rect.center().y(), self._rect.bottom()
+        return {
+            "top_left": QRectF(left - half, top - half, self.HANDLE, self.HANDLE),
+            "top": QRectF(center_x - half, top - half, self.HANDLE, self.HANDLE),
+            "top_right": QRectF(right - half, top - half, self.HANDLE, self.HANDLE),
+            "right": QRectF(right - half, center_y - half, self.HANDLE, self.HANDLE),
+            "bottom_right": QRectF(right - half, bottom - half, self.HANDLE, self.HANDLE),
+            "bottom": QRectF(center_x - half, bottom - half, self.HANDLE, self.HANDLE),
+            "bottom_left": QRectF(left - half, bottom - half, self.HANDLE, self.HANDLE),
+            "left": QRectF(left - half, center_y - half, self.HANDLE, self.HANDLE),
+        }
+
+    def _handle_at(self, point: QPointF) -> str:
+        if not self.isSelected() or self.data.get("locked") or self._crop_mode:
+            return ""
+        for name, rect in self._handle_rects().items():
+            if rect.contains(point):
+                return name
+        return ""
 
     def hoverMoveEvent(self, event) -> None:
-        if not self.data.get("locked") and self._handle_rect().contains(event.pos()):
-            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        handle = self._handle_at(event.pos())
+        if handle:
+            self.setCursor(self._HANDLE_CURSORS[handle])
+        elif self._crop_mode:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         else:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and not self.data.get("locked") and self._handle_rect().contains(event.pos()):
-            self._resizing = True
+        if event.button() == Qt.MouseButton.LeftButton and self._crop_mode:
+            self._crop_drag_position = event.pos()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        handle = self._handle_at(event.pos())
+        if event.button() == Qt.MouseButton.LeftButton and handle:
+            self._resize_handle = handle
             self._start_rect = QRectF(self._rect)
+            self._start_local_to_scene = self.sceneTransform()
+            self._start_scene_to_local, _ok = self._start_local_to_scene.inverted()
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        if self._resizing:
-            point = event.pos()
+        if self._crop_mode and self._crop_drag_position is not None:
+            pixmap = self._pixmap
+            if pixmap.isNull():
+                event.accept()
+                return
+            source, _visual, max_x, max_y = self._cover_geometry(pixmap, self._rect)
+            delta = event.pos() - self._crop_drag_position
             self.prepareGeometryChange()
-            self._rect.setWidth(max(15.0, point.x()))
-            self._rect.setHeight(max(15.0, point.y()))
+            if max_x > 0:
+                self.data["crop_x"] = max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(self.data.get("crop_x", 0.5))
+                        - delta.x() * source.width() / self._rect.width() / max_x,
+                    ),
+                )
+            if max_y > 0:
+                self.data["crop_y"] = max(
+                    0.0,
+                    min(
+                        1.0,
+                        float(self.data.get("crop_y", 0.5))
+                        - delta.y() * source.height() / self._rect.height() / max_y,
+                    ),
+                )
+            self._crop_drag_position = event.pos()
+            self.update()
+            self.crop_state_changed.emit(
+                float(self.data.get("crop_x", 0.5)),
+                float(self.data.get("crop_y", 0.5)),
+                float(self.data.get("zoom", 1.0)),
+            )
+            event.accept()
+            return
+        if self._resize_handle:
+            point = self._start_scene_to_local.map(event.scenePos())
+            left, top = self._start_rect.left(), self._start_rect.top()
+            right, bottom = self._start_rect.right(), self._start_rect.bottom()
+            if "left" in self._resize_handle:
+                left = min(point.x(), right - self.MIN_SIZE)
+            if "right" in self._resize_handle:
+                right = max(point.x(), left + self.MIN_SIZE)
+            if "top" in self._resize_handle:
+                top = min(point.y(), bottom - self.MIN_SIZE)
+            if "bottom" in self._resize_handle:
+                bottom = max(point.y(), top + self.MIN_SIZE)
+            new_top_left_scene = self._start_local_to_scene.map(QPointF(left, top))
+            new_position = (
+                self.parentItem().mapFromScene(new_top_left_scene)
+                if self.parentItem()
+                else new_top_left_scene
+            )
+            new_width = right - left
+            new_height = bottom - top
+            if self.scene() and not self.parentItem() and abs(self.rotation() % 360.0) < 0.001:
+                paper = getattr(self.scene(), "paper_rect", self.scene().sceneRect())
+                new_position.setX(max(paper.left(), min(new_position.x(), paper.right() - self.MIN_SIZE)))
+                new_position.setY(max(paper.top(), min(new_position.y(), paper.bottom() - self.MIN_SIZE)))
+                new_width = min(new_width, paper.right() - new_position.x())
+                new_height = min(new_height, paper.bottom() - new_position.y())
+            self.prepareGeometryChange()
+            self.setPos(new_position)
+            self._rect = QRectF(0.0, 0.0, new_width, new_height)
             self.update()
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        if self._resizing:
-            self._resizing = False
+        if self._crop_mode and self._crop_drag_position is not None:
+            self._crop_drag_position = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        if self._resize_handle:
+            self._resize_handle = ""
             self.changed.emit()
             event.accept()
             return
@@ -253,11 +502,22 @@ class PhotoItem(QGraphicsObject):
         self.changed.emit()
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        self.request_crop.emit(self)
+        if not self._crop_mode:
+            self.request_crop.emit(self)
         event.accept()
+
+    def wheelEvent(self, event) -> None:
+        if self._crop_mode:
+            step = 0.12 if event.delta() > 0 else -0.12
+            self.set_crop_zoom(float(self.data.get("zoom", 1.0)) + step)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene():
+            if self._crop_mode:
+                return self.pos()
             bounds = getattr(self.scene(), "paper_rect", self.scene().sceneRect())
             pos = value
             x = max(bounds.left(), min(pos.x(), bounds.right() - self._rect.width()))
@@ -274,6 +534,162 @@ class PhotoItem(QGraphicsObject):
             rotation=round(self.rotation(), 3),
         )
         return dict(self.data)
+
+
+class CollageResizeOverlay(QGraphicsObject):
+    """Overlay editor untuk memindahkan dan menskalakan seluruh kolase."""
+
+    changed = Signal()
+    HANDLE = 5.0
+    MIN_SIZE = 30.0
+    _HANDLE_CURSORS = PhotoItem._HANDLE_CURSORS
+
+    def __init__(self, photos: list[PhotoItem]):
+        super().__init__()
+        self.photos = photos
+        self._rect = self._photo_bounds()
+        self._handle = ""
+        self._moving = False
+        self._press_scene = QPointF()
+        self._start_group = QRectF()
+        self._start_photos: list[tuple[PhotoItem, QPointF, float, float]] = []
+        self.setZValue(20_000.0)
+        self.setAcceptHoverEvents(True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable, True)
+
+    def _photo_bounds(self) -> QRectF:
+        bounds = QRectF()
+        for index, item in enumerate(self.photos):
+            item_bounds = item.mapRectToScene(item._rect)
+            bounds = item_bounds if index == 0 else bounds.united(item_bounds)
+        return bounds
+
+    def boundingRect(self) -> QRectF:
+        extra = self.HANDLE / 2.0 + 1.0
+        return self._rect.adjusted(-extra, -extra, extra, extra)
+
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        del option
+        if widget is None:
+            return
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor("#7c3aed"), 0.9))
+        painter.drawRect(self._rect)
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#7c3aed"), 0.8))
+        for rect in self._handle_rects().values():
+            painter.drawRect(rect)
+
+    def _handle_rects(self) -> dict[str, QRectF]:
+        half = self.HANDLE / 2.0
+        left, center_x, right = self._rect.left(), self._rect.center().x(), self._rect.right()
+        top, center_y, bottom = self._rect.top(), self._rect.center().y(), self._rect.bottom()
+        return {
+            "top_left": QRectF(left - half, top - half, self.HANDLE, self.HANDLE),
+            "top": QRectF(center_x - half, top - half, self.HANDLE, self.HANDLE),
+            "top_right": QRectF(right - half, top - half, self.HANDLE, self.HANDLE),
+            "right": QRectF(right - half, center_y - half, self.HANDLE, self.HANDLE),
+            "bottom_right": QRectF(right - half, bottom - half, self.HANDLE, self.HANDLE),
+            "bottom": QRectF(center_x - half, bottom - half, self.HANDLE, self.HANDLE),
+            "bottom_left": QRectF(left - half, bottom - half, self.HANDLE, self.HANDLE),
+            "left": QRectF(left - half, center_y - half, self.HANDLE, self.HANDLE),
+        }
+
+    def _handle_at(self, point: QPointF) -> str:
+        for name, rect in self._handle_rects().items():
+            if rect.contains(point):
+                return name
+        return ""
+
+    def hoverMoveEvent(self, event) -> None:
+        handle = self._handle_at(event.pos())
+        self.setCursor(self._HANDLE_CURSORS.get(handle, Qt.CursorShape.SizeAllCursor))
+        super().hoverMoveEvent(event)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._handle = self._handle_at(event.pos())
+        self._moving = not self._handle and self._rect.contains(event.pos())
+        if not self._handle and not self._moving:
+            super().mousePressEvent(event)
+            return
+        self._press_scene = event.scenePos()
+        self._start_group = QRectF(self._rect)
+        self._start_photos = [
+            (item, QPointF(item.pos()), item._rect.width(), item._rect.height())
+            for item in self.photos
+        ]
+        self.setCursor(
+            self._HANDLE_CURSORS.get(self._handle, Qt.CursorShape.ClosedHandCursor)
+        )
+        event.accept()
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if not self._handle and not self._moving:
+            super().mouseMoveEvent(event)
+            return
+        delta = event.scenePos() - self._press_scene
+        paper = getattr(self.scene(), "paper_rect", self.scene().sceneRect())
+        if self._moving:
+            delta.setX(max(paper.left() - self._start_group.left(), min(delta.x(), paper.right() - self._start_group.right())))
+            delta.setY(max(paper.top() - self._start_group.top(), min(delta.y(), paper.bottom() - self._start_group.bottom())))
+            target = self._start_group.translated(delta)
+        else:
+            left, top = self._start_group.left(), self._start_group.top()
+            right, bottom = self._start_group.right(), self._start_group.bottom()
+            if "left" in self._handle:
+                left = max(paper.left(), min(left + delta.x(), right - self.MIN_SIZE))
+            if "right" in self._handle:
+                right = min(paper.right(), max(right + delta.x(), left + self.MIN_SIZE))
+            if "top" in self._handle:
+                top = max(paper.top(), min(top + delta.y(), bottom - self.MIN_SIZE))
+            if "bottom" in self._handle:
+                bottom = min(paper.bottom(), max(bottom + delta.y(), top + self.MIN_SIZE))
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                ratio = self._start_group.width() / max(1.0, self._start_group.height())
+                if abs((right - left) - self._start_group.width()) >= abs((bottom - top) - self._start_group.height()):
+                    height = (right - left) / ratio
+                    if "top" in self._handle:
+                        top = bottom - height
+                    else:
+                        bottom = top + height
+                else:
+                    width = (bottom - top) * ratio
+                    if "left" in self._handle:
+                        left = right - width
+                    else:
+                        right = left + width
+            target = QRectF(left, top, right - left, bottom - top)
+        self._apply_group_rect(target)
+        event.accept()
+
+    def _apply_group_rect(self, target: QRectF) -> None:
+        scale_x = target.width() / max(1.0, self._start_group.width())
+        scale_y = target.height() / max(1.0, self._start_group.height())
+        for item, start_pos, start_width, start_height in self._start_photos:
+            item.prepareGeometryChange()
+            item.setPos(
+                target.left() + (start_pos.x() - self._start_group.left()) * scale_x,
+                target.top() + (start_pos.y() - self._start_group.top()) * scale_y,
+            )
+            item._rect = QRectF(0.0, 0.0, start_width * scale_x, start_height * scale_y)
+            item.update()
+        self.prepareGeometryChange()
+        self._rect = QRectF(target)
+        self.update()
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self._handle or self._moving:
+            self._handle = ""
+            self._moving = False
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self.changed.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class TextItem(QGraphicsTextItem):
@@ -379,6 +795,9 @@ class DocumentScene(QGraphicsScene):
         self.letterhead: dict = {}
         self.show_guides = True
         self.paper_rect = QRectF(0, 0, self.page_width, self.page_height)
+        self.active_crop_item: PhotoItem | None = None
+        self.crop_shade: QGraphicsRectItem | None = None
+        self.collage_overlay: CollageResizeOverlay | None = None
         self._set_padded_scene_rect()
         self.selectionChanged.connect(self.update)
 
@@ -484,6 +903,9 @@ class DocumentScene(QGraphicsScene):
         margins: tuple[float, float, float, float],
         letterhead: dict | None = None,
     ) -> None:
+        self.active_crop_item = None
+        self.crop_shade = None
+        self.collage_overlay = None
         self.clear()
         self.configure_page(width, height, margins, page.background, letterhead)
         for data in page.elements:
@@ -505,6 +927,64 @@ class DocumentScene(QGraphicsScene):
         item.setSelected(True)
         self.content_changed.emit()
         return item
+
+    def begin_crop(self, item: PhotoItem) -> bool:
+        if self.collage_overlay is not None:
+            self.finish_collage_resize()
+        if self.active_crop_item is not None and self.active_crop_item is not item:
+            self.finish_crop(False)
+        self.clearSelection()
+        if not item.begin_crop():
+            return False
+        self.active_crop_item = item
+        shade = QGraphicsRectItem(self.paper_rect)
+        shade.setPen(QPen(Qt.PenStyle.NoPen))
+        shade.setBrush(QColor(15, 23, 42, 125))
+        shade.setZValue(9_999.0)
+        shade.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.addItem(shade)
+        self.crop_shade = shade
+        return True
+
+    def finish_crop(self, commit: bool) -> None:
+        item = self.active_crop_item
+        if item is None:
+            return
+        item.finish_crop(commit)
+        self.active_crop_item = None
+        if self.crop_shade is not None:
+            self.removeItem(self.crop_shade)
+            self.crop_shade = None
+        if commit:
+            self.content_changed.emit()
+
+    def begin_collage_resize(self) -> CollageResizeOverlay | None:
+        if self.active_crop_item is not None:
+            self.finish_crop(False)
+        if self.collage_overlay is not None:
+            return self.collage_overlay
+        photos = [
+            item
+            for item in reversed(self.items())
+            if isinstance(item, PhotoItem) and not item.data.get("locked")
+        ]
+        if not photos:
+            return None
+        self.clearSelection()
+        overlay = CollageResizeOverlay(photos)
+        overlay.changed.connect(self.content_changed)
+        self.addItem(overlay)
+        self.collage_overlay = overlay
+        return overlay
+
+    def finish_collage_resize(self, emit_change: bool = True) -> None:
+        overlay = self.collage_overlay
+        if overlay is None:
+            return
+        self.removeItem(overlay)
+        self.collage_overlay = None
+        if emit_change:
+            self.content_changed.emit()
 
     def apply_template(
         self,
@@ -580,8 +1060,17 @@ class DocumentScene(QGraphicsScene):
         """Render langsung ke PDF/printer agar tidak membuat bitmap satu halaman."""
 
         previous = self.show_guides
+        overlay = self.collage_overlay
+        crop_item = self.active_crop_item
+        crop_shade = self.crop_shade
         self.show_guides = False
         self.clearSelection()
+        if overlay is not None:
+            overlay.setVisible(False)
+        if crop_shade is not None:
+            crop_shade.setVisible(False)
+        if crop_item is not None:
+            crop_item._crop_mode = False
         try:
             self.render(
                 painter,
@@ -590,4 +1079,10 @@ class DocumentScene(QGraphicsScene):
                 Qt.AspectRatioMode.IgnoreAspectRatio,
             )
         finally:
+            if crop_item is not None:
+                crop_item._crop_mode = True
+            if overlay is not None:
+                overlay.setVisible(True)
+            if crop_shade is not None:
+                crop_shade.setVisible(True)
             self.show_guides = previous

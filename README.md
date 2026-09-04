@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.10.0 — Live Preview responsif dan hemat memori**.
+Versi source saat ini: **0.11.0 — Editor kolase dan crop langsung bergaya Canva**.
 
 ## Menu aplikasi
 
@@ -40,9 +40,13 @@ browser terpisah.
 - Kolase otomatis dari seluruh foto di panel Media menjadi beberapa halaman.
 - Impor satu atau banyak foto, impor folder, dan drag-and-drop dari Explorer.
 - Media tray lokal dengan thumbnail.
-- Pindah dan resize elemen secara langsung pada kanvas.
-- Crop interaktif bergaya Canva: frame tetap, foto dapat diseret dan di-zoom
-  langsung di dalam frame, disertai fit cover/contain/fill dan rotasi.
+- Resize setiap frame melalui delapan pegangan sisi/sudut atau ukuran presisi
+  lebar dan tinggi dalam mm, dengan opsi mempertahankan rasio.
+- Mode ukuran kolase untuk memindahkan dan menskalakan seluruh kumpulan foto
+  langsung di kanvas; tahan Shift untuk mempertahankan rasio kolase.
+- Crop langsung bergaya Canva: area luar frame diredupkan, garis bantu sepertiga
+  ditampilkan, foto dapat diseret, di-zoom dengan roda/slider, dirotasi, direset,
+  dibatalkan, atau diterapkan tanpa membuka dialog terpisah.
 - Border, warna border, sudut bulat, serta keterangan foto.
 - Teks bebas yang dapat dipindah, diedit langsung, dirotasi, dan dikunci.
 - Font, ukuran, lebar kotak, bold, italic, underline, alignment, jarak huruf,

@@ -114,6 +114,13 @@ class CanvasView(QGraphicsView):
         self.setBackgroundBrush(QColor("#cbd5e1"))
 
     def wheelEvent(self, event) -> None:
+        scene = self.scene()
+        if isinstance(scene, DocumentScene) and scene.active_crop_item is not None:
+            step = 0.12 if event.angleDelta().y() > 0 else -0.12
+            current = float(scene.active_crop_item.data.get("zoom", 1.0))
+            scene.active_crop_item.set_crop_zoom(current + step)
+            event.accept()
+            return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
@@ -678,6 +685,7 @@ class DocumentationPhotoPage(QWidget):
         self.history: list[str] = []
         self.history_index = -1
         self._restoring = False
+        self._active_crop_item: PhotoItem | None = None
         self._thumbnail_cache: dict[str, tuple[int, QIcon]] = {}
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
@@ -828,7 +836,41 @@ class DocumentationPhotoPage(QWidget):
         canvas_toolbar.addWidget(zoom_out)
         canvas_toolbar.addWidget(zoom_in)
         canvas_toolbar.addWidget(fit)
+        self.resize_collage_button = QPushButton("Ubah Ukuran Kolase")
+        self.resize_collage_button.clicked.connect(self._toggle_collage_resize)
+        canvas_toolbar.addWidget(self.resize_collage_button)
         center_layout.addLayout(canvas_toolbar)
+
+        self.crop_toolbar = QFrame()
+        self.crop_toolbar.setObjectName("ToolbarCard")
+        crop_tools = QHBoxLayout(self.crop_toolbar)
+        crop_tools.setContentsMargins(9, 6, 9, 6)
+        crop_tools.setSpacing(7)
+        crop_label = QLabel("Mode Crop")
+        crop_label.setObjectName("PanelTitle")
+        crop_tools.addWidget(crop_label)
+        crop_tools.addWidget(QLabel("Zoom"))
+        self.inline_crop_zoom = QSlider(Qt.Orientation.Horizontal)
+        self.inline_crop_zoom.setRange(100, 500)
+        self.inline_crop_zoom.setSingleStep(5)
+        self.inline_crop_zoom.setMinimumWidth(150)
+        self.inline_crop_zoom.valueChanged.connect(self._set_inline_crop_zoom)
+        crop_tools.addWidget(self.inline_crop_zoom, 1)
+        rotate_left = QPushButton("Putar −90°")
+        rotate_right = QPushButton("Putar +90°")
+        reset_crop = QPushButton("Reset")
+        cancel_crop = QPushButton("Batal")
+        apply_crop = QPushButton("Selesai Crop")
+        apply_crop.setObjectName("PrimaryButton")
+        rotate_left.clicked.connect(lambda: self._rotate_inline_crop(-90))
+        rotate_right.clicked.connect(lambda: self._rotate_inline_crop(90))
+        reset_crop.clicked.connect(self._reset_inline_crop)
+        cancel_crop.clicked.connect(self._cancel_inline_crop)
+        apply_crop.clicked.connect(self._apply_inline_crop)
+        for control in (rotate_left, rotate_right, reset_crop, cancel_crop, apply_crop):
+            crop_tools.addWidget(control)
+        self.crop_toolbar.setVisible(False)
+        center_layout.addWidget(self.crop_toolbar)
 
         self.scene = DocumentScene(self)
         self.view = CanvasView(self.scene)
@@ -843,7 +885,7 @@ class DocumentationPhotoPage(QWidget):
         root.addWidget(splitter, 1)
 
         self.scene.content_changed.connect(self._on_scene_changed)
-        self.scene.crop_requested.connect(self._open_crop_dialog)
+        self.scene.crop_requested.connect(self._begin_inline_crop)
         self.scene.selectionChanged.connect(self._selection_changed)
         self.scene.focusItemChanged.connect(lambda new, old, reason: self._on_scene_changed() if isinstance(old, TextItem) else None)
 
@@ -1035,12 +1077,24 @@ class DocumentationPhotoPage(QWidget):
         self.radius_spin = QDoubleSpinBox()
         self.radius_spin.setRange(0, 32)
         self.radius_spin.valueChanged.connect(self._apply_photo_properties)
+        self.photo_width = QDoubleSpinBox()
+        self.photo_width.setRange(PhotoItem.MIN_SIZE, 600.0)
+        self.photo_width.setDecimals(1)
+        self.photo_width.setSuffix(" mm")
+        self.photo_width.valueChanged.connect(self._apply_photo_geometry)
+        self.photo_height = QDoubleSpinBox()
+        self.photo_height.setRange(PhotoItem.MIN_SIZE, 600.0)
+        self.photo_height.setDecimals(1)
+        self.photo_height.setSuffix(" mm")
+        self.photo_height.valueChanged.connect(self._apply_photo_geometry)
+        self.photo_aspect_lock = QCheckBox("Pertahankan rasio frame")
+        self.photo_aspect_lock.setChecked(False)
         self.rotation_spin = QDoubleSpinBox()
         self.rotation_spin.setRange(-360, 360)
         self.rotation_spin.valueChanged.connect(self._apply_common_properties)
         self.lock_check = QCheckBox("Kunci elemen")
         self.lock_check.toggled.connect(self._apply_common_properties)
-        self.crop_button = QPushButton("Crop / Posisi Foto…")
+        self.crop_button = QPushButton("Crop Langsung di Kanvas")
         self.crop_button.clicked.connect(self._crop_selected)
         self.replace_button = QPushButton("Ganti Foto…")
         self.replace_button.clicked.connect(self.replace_selected_photo)
@@ -1093,6 +1147,9 @@ class DocumentationPhotoPage(QWidget):
 
         self.photo_controls = [
             ("Mode gambar", self.fit_combo),
+            ("Lebar frame", self.photo_width),
+            ("Tinggi frame", self.photo_height),
+            ("", self.photo_aspect_lock),
             ("Keterangan", self.caption_field),
             ("", self.caption_check),
             ("Tebal bingkai", self.border_spin),
@@ -1153,10 +1210,12 @@ class DocumentationPhotoPage(QWidget):
         help_text = QLabel(
             "Kontrol kanvas:\n"
             "• Seret elemen untuk memindahkan\n"
-            "• Seret kotak biru untuk resize\n"
-            "• Klik ganda foto untuk crop\n"
+            "• Seret pegangan putih untuk resize frame\n"
+            "• Ubah Ukuran Kolase untuk skala bersama\n"
+            "• Klik ganda foto untuk crop langsung\n"
             "• Klik ganda teks untuk mengetik\n"
-            "• Ctrl + roda mouse untuk zoom"
+            "• Roda mouse saat crop untuk zoom\n"
+            "• Ctrl + roda mouse untuk zoom kanvas"
         )
         help_text.setWordWrap(True)
         help_text.setObjectName("HelpCard")
@@ -1169,6 +1228,8 @@ class DocumentationPhotoPage(QWidget):
         QShortcut(QKeySequence.StandardKey.Undo, self, self.undo)
         QShortcut(QKeySequence.StandardKey.Redo, self, self.redo)
         QShortcut(QKeySequence.StandardKey.Delete, self, self.delete_selected)
+        QShortcut(QKeySequence("Escape"), self, self._cancel_inline_crop)
+        QShortcut(QKeySequence("Ctrl+Return"), self, self._apply_inline_crop)
 
     def _load_autosave(self) -> None:
         path = autosave_path()
@@ -1202,6 +1263,11 @@ class DocumentationPhotoPage(QWidget):
         QTimer.singleShot(0, self._fit_page)
 
     def _load_current_scene(self) -> None:
+        if self.scene.active_crop_item is not None:
+            self.scene.finish_crop(False)
+        if self.scene.collage_overlay is not None:
+            self.scene.finish_collage_resize(False)
+        self._reset_editor_mode_ui()
         page = self.project.pages[self.current_page_index]
         width, height = self.project.page_size_mm
         margins = (self.project.margins.top, self.project.margins.right, self.project.margins.bottom, self.project.margins.left)
@@ -1292,6 +1358,7 @@ class DocumentationPhotoPage(QWidget):
     def _on_scene_changed(self) -> None:
         if self._restoring:
             return
+        self._selection_changed()
         self._save_current_scene()
         self._push_history()
         self._schedule_autosave()
@@ -1342,6 +1409,11 @@ class DocumentationPhotoPage(QWidget):
     def set_current_page(self, index: int) -> None:
         if self._restoring or index < 0 or index >= len(self.project.pages) or index == self.current_page_index:
             return
+        if self._active_crop_item is not None:
+            self._finish_inline_crop(True)
+        if self.scene.collage_overlay is not None:
+            self.scene.finish_collage_resize()
+            self.resize_collage_button.setText("Ubah Ukuran Kolase")
         self._save_current_scene()
         self.current_page_index = index
         self._load_current_scene()
@@ -1386,6 +1458,7 @@ class DocumentationPhotoPage(QWidget):
         self.apply_template(item.data(Qt.ItemDataRole.UserRole))
 
     def apply_template(self, template_id: str) -> None:
+        self._close_canvas_modes(commit_crop=True, commit_collage=False)
         self.project.pages[self.current_page_index].collage = {
             "template_id": template_id,
             "gap_mm": self.collage_gap.value(),
@@ -1413,6 +1486,7 @@ class DocumentationPhotoPage(QWidget):
         )
 
     def apply_custom_grid(self) -> None:
+        self._close_canvas_modes(commit_crop=True, commit_collage=False)
         columns = self.custom_columns.value()
         rows = self.custom_rows.value()
         top, right, bottom, left = self.scene.effective_margins()
@@ -1447,6 +1521,7 @@ class DocumentationPhotoPage(QWidget):
         self.scene.content_changed.emit()
 
     def auto_collage(self) -> None:
+        self._close_canvas_modes(commit_crop=True, commit_collage=True)
         if not self.project.media:
             QMessageBox.information(self, "Media kosong", "Impor foto terlebih dahulu sebelum membuat kolase otomatis.")
             return
@@ -1599,6 +1674,9 @@ class DocumentationPhotoPage(QWidget):
         self.scene.add_text()
 
     def delete_selected(self) -> None:
+        if self._active_crop_item is not None:
+            self._cancel_inline_crop()
+            return
         self.scene.delete_selected()
 
     def _selection_changed(self) -> None:
@@ -1620,6 +1698,9 @@ class DocumentationPhotoPage(QWidget):
                 self.caption_check,
                 self.border_spin,
                 self.radius_spin,
+                self.photo_width,
+                self.photo_height,
+                self.photo_aspect_lock,
                 self.rotation_spin,
                 self.lock_check,
                 self.text_editor,
@@ -1644,6 +1725,8 @@ class DocumentationPhotoPage(QWidget):
             self.caption_check.setChecked(bool(selected.data.get("show_caption", False)))
             self.border_spin.setValue(float(selected.data.get("border_width", 0.5)))
             self.radius_spin.setValue(float(selected.data.get("radius", 1.5)))
+            self.photo_width.setValue(selected._rect.width())
+            self.photo_height.setValue(selected._rect.height())
         elif isinstance(selected, TextItem):
             self.text_editor.setPlainText(selected.toPlainText())
             self.font_combo.setCurrentText(str(selected.data.get("font_family", "Arial")))
@@ -1677,6 +1760,27 @@ class DocumentationPhotoPage(QWidget):
             radius=self.radius_spin.value(),
         )
         item.update()
+        self.scene.content_changed.emit()
+
+    def _apply_photo_geometry(self) -> None:
+        item = self.scene.selected_editable()
+        if not isinstance(item, PhotoItem) or item.crop_mode:
+            return
+        width = self.photo_width.value()
+        height = self.photo_height.value()
+        ratio = item._rect.width() / max(PhotoItem.MIN_SIZE, item._rect.height())
+        if self.photo_aspect_lock.isChecked():
+            if self.sender() is self.photo_width:
+                height = width / max(0.01, ratio)
+            else:
+                width = height * ratio
+        width = min(width, max(PhotoItem.MIN_SIZE, self.scene.paper_rect.right() - item.pos().x()))
+        height = min(height, max(PhotoItem.MIN_SIZE, self.scene.paper_rect.bottom() - item.pos().y()))
+        blockers = (QSignalBlocker(self.photo_width), QSignalBlocker(self.photo_height))
+        self.photo_width.setValue(width)
+        self.photo_height.setValue(height)
+        del blockers
+        item.set_frame_size(width, height)
         self.scene.content_changed.emit()
 
     def _apply_common_properties(self) -> None:
@@ -1746,18 +1850,108 @@ class DocumentationPhotoPage(QWidget):
     def _crop_selected(self) -> None:
         item = self.scene.selected_editable()
         if isinstance(item, PhotoItem):
-            self._open_crop_dialog(item)
+            self._begin_inline_crop(item)
 
-    def _open_crop_dialog(self, item: PhotoItem) -> None:
+    def _begin_inline_crop(self, item: PhotoItem) -> None:
         if not item.data.get("photo_path"):
             path, _ = QFileDialog.getOpenFileName(self, "Pilih foto", "", IMAGE_FILTER)
             if not path:
                 return
             self._add_media_paths([path])
             item.data["photo_path"] = str(Path(path).resolve())
-        dialog = CropDialog(item, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.scene.content_changed.emit()
+            item._loaded_path = ""
+        if self._active_crop_item is not None and self._active_crop_item is not item:
+            self._finish_inline_crop(True)
+        if not self.scene.begin_crop(item):
+            return
+        self._active_crop_item = item
+        item.crop_state_changed.connect(self._sync_inline_crop_controls)
+        self._sync_inline_crop_controls(
+            float(item.data.get("crop_x", 0.5)),
+            float(item.data.get("crop_y", 0.5)),
+            float(item.data.get("zoom", 1.0)),
+        )
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.crop_toolbar.setVisible(True)
+        self.resize_collage_button.setEnabled(False)
+        self.status_text(
+            "Mode crop aktif: seret foto di kanvas, gunakan roda mouse atau slider untuk zoom, lalu klik Selesai Crop."
+        )
+
+    def _sync_inline_crop_controls(self, _crop_x: float, _crop_y: float, zoom: float) -> None:
+        blocker = QSignalBlocker(self.inline_crop_zoom)
+        self.inline_crop_zoom.setValue(round(zoom * 100))
+        del blocker
+
+    def _set_inline_crop_zoom(self, value: int) -> None:
+        if self._active_crop_item is not None:
+            self._active_crop_item.set_crop_zoom(value / 100.0)
+
+    def _rotate_inline_crop(self, degrees: int) -> None:
+        if self._active_crop_item is not None:
+            self._active_crop_item.rotate_crop_image(degrees)
+
+    def _reset_inline_crop(self) -> None:
+        if self._active_crop_item is not None:
+            self._active_crop_item.reset_crop()
+
+    def _apply_inline_crop(self) -> None:
+        self._finish_inline_crop(True)
+
+    def _cancel_inline_crop(self) -> None:
+        self._finish_inline_crop(False)
+
+    def _finish_inline_crop(self, commit: bool) -> None:
+        item = self._active_crop_item
+        if item is None:
+            return
+        try:
+            item.crop_state_changed.disconnect(self._sync_inline_crop_controls)
+        except (RuntimeError, TypeError):
+            pass
+        self.scene.finish_crop(commit)
+        self._active_crop_item = None
+        self._reset_editor_mode_ui()
+        self.status_text("Crop foto diterapkan." if commit else "Perubahan crop dibatalkan.")
+
+    def _toggle_collage_resize(self) -> None:
+        if self._active_crop_item is not None:
+            self._finish_inline_crop(True)
+        if self.scene.collage_overlay is not None:
+            self.scene.finish_collage_resize()
+            self.resize_collage_button.setText("Ubah Ukuran Kolase")
+            self.status_text("Ukuran dan posisi kolase diterapkan.")
+            return
+        overlay = self.scene.begin_collage_resize()
+        if overlay is None:
+            QMessageBox.information(
+                self,
+                "Kolase belum tersedia",
+                "Tambahkan atau buat kolase foto terlebih dahulu.",
+            )
+            return
+        self.resize_collage_button.setText("Selesai Ubah Ukuran")
+        self.status_text(
+            "Mode ukuran kolase aktif: seret bagian tengah untuk memindahkan atau pegangan ungu untuk mengubah ukuran. Tahan Shift agar rasio tetap."
+        )
+
+    def _reset_editor_mode_ui(self) -> None:
+        self._active_crop_item = None
+        if hasattr(self, "crop_toolbar"):
+            self.crop_toolbar.setVisible(False)
+        if hasattr(self, "resize_collage_button"):
+            self.resize_collage_button.setEnabled(True)
+            if self.scene.collage_overlay is None:
+                self.resize_collage_button.setText("Ubah Ukuran Kolase")
+        if hasattr(self, "view"):
+            self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+
+    def _close_canvas_modes(self, *, commit_crop: bool, commit_collage: bool) -> None:
+        if self._active_crop_item is not None:
+            self._finish_inline_crop(commit_crop)
+        if self.scene.collage_overlay is not None:
+            self.scene.finish_collage_resize(commit_collage)
+        self._reset_editor_mode_ui()
 
     def page_setup(self) -> None:
         dialog = PageSetupDialog(self.project, self)

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0 — 2026-09-04
+
+- Menambahkan delapan pegangan sisi dan sudut pada setiap frame foto agar lebar
+  dan tinggi dapat diubah langsung seperti elemen pada Canva.
+- Menambahkan ukuran frame presisi dalam milimeter serta pilihan untuk menjaga
+  rasio saat ukuran diubah dari panel properti.
+- Menambahkan mode khusus untuk memindahkan dan menskalakan seluruh kolase
+  sebagai satu kesatuan, termasuk resize proporsional dengan tombol Shift.
+- Memindahkan crop ke kanvas utama: area di luar frame diredupkan, gambar asli
+  terlihat melewati frame, dan garis bantu sepertiga ditampilkan.
+- Menambahkan drag posisi, wheel/slider zoom, rotasi, reset, batal, dan terapkan
+  pada toolbar crop tanpa membuka dialog terpisah.
+- Menjaga overlay editor agar tidak ikut masuk ke PDF, DOCX, atau hasil cetak.
+
 ## 0.10.0 — 2026-09-03
 
 - Mengubah Live Preview SIPS menjadi lazy render: hanya dokumen yang sedang
