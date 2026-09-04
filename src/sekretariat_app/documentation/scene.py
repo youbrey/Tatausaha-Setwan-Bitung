@@ -785,6 +785,7 @@ class TextItem(QGraphicsTextItem):
 class DocumentScene(QGraphicsScene):
     content_changed = Signal()
     crop_requested = Signal(object)
+    collage_mode_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -798,7 +799,10 @@ class DocumentScene(QGraphicsScene):
         self.active_crop_item: PhotoItem | None = None
         self.crop_shade: QGraphicsRectItem | None = None
         self.collage_overlay: CollageResizeOverlay | None = None
+        self._paper_shadow_item: QGraphicsRectItem | None = None
+        self._paper_item: QGraphicsRectItem | None = None
         self._set_padded_scene_rect()
+        self._ensure_paper_items()
         self.selectionChanged.connect(self.update)
 
     def _set_padded_scene_rect(self) -> None:
@@ -825,16 +829,31 @@ class DocumentScene(QGraphicsScene):
         self.letterhead = dict(letterhead or {})
         self.paper_rect = QRectF(0, 0, width, height)
         self._set_padded_scene_rect()
+        self._ensure_paper_items()
         self.update()
+
+    def _ensure_paper_items(self) -> None:
+        """Kertas adalah item scene nyata agar selalu tampak di QGraphicsView."""
+
+        if self._paper_shadow_item is None:
+            self._paper_shadow_item = QGraphicsRectItem()
+            self._paper_shadow_item.setZValue(-10_001.0)
+            self._paper_shadow_item.setPen(QPen(Qt.PenStyle.NoPen))
+            self._paper_shadow_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.addItem(self._paper_shadow_item)
+        if self._paper_item is None:
+            self._paper_item = QGraphicsRectItem()
+            self._paper_item.setZValue(-10_000.0)
+            self._paper_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.addItem(self._paper_item)
+        self._paper_shadow_item.setRect(self.paper_rect.translated(2.8, 3.2))
+        self._paper_shadow_item.setBrush(QColor(15, 23, 42, 58))
+        self._paper_item.setRect(self.paper_rect)
+        self._paper_item.setBrush(self.background_color)
+        self._paper_item.setPen(QPen(QColor("#94a3b8"), 0.45))
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         painter.fillRect(rect, QColor("#cbd5e1"))
-        shadow = self.paper_rect.translated(3.0, 3.0)
-        painter.fillRect(shadow, QColor(15, 23, 42, 55))
-        painter.fillRect(self.paper_rect, self.background_color)
-        painter.setPen(QPen(QColor("#94a3b8"), 0.35))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(self.paper_rect)
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         del rect
@@ -906,6 +925,8 @@ class DocumentScene(QGraphicsScene):
         self.active_crop_item = None
         self.crop_shade = None
         self.collage_overlay = None
+        self._paper_shadow_item = None
+        self._paper_item = None
         self.clear()
         self.configure_page(width, height, margins, page.background, letterhead)
         for data in page.elements:
@@ -958,16 +979,18 @@ class DocumentScene(QGraphicsScene):
         if commit:
             self.content_changed.emit()
 
-    def begin_collage_resize(self) -> CollageResizeOverlay | None:
+    def begin_collage_resize(
+        self,
+        photos: list[PhotoItem] | None = None,
+    ) -> CollageResizeOverlay | None:
         if self.active_crop_item is not None:
             self.finish_crop(False)
         if self.collage_overlay is not None:
             return self.collage_overlay
-        photos = [
-            item
-            for item in reversed(self.items())
-            if isinstance(item, PhotoItem) and not item.data.get("locked")
+        candidates = photos if photos is not None else [
+            item for item in reversed(self.items()) if isinstance(item, PhotoItem)
         ]
+        photos = [item for item in candidates if not item.data.get("locked")]
         if not photos:
             return None
         self.clearSelection()
@@ -975,6 +998,7 @@ class DocumentScene(QGraphicsScene):
         overlay.changed.connect(self.content_changed)
         self.addItem(overlay)
         self.collage_overlay = overlay
+        self.collage_mode_changed.emit(True)
         return overlay
 
     def finish_collage_resize(self, emit_change: bool = True) -> None:
@@ -983,6 +1007,7 @@ class DocumentScene(QGraphicsScene):
             return
         self.removeItem(overlay)
         self.collage_overlay = None
+        self.collage_mode_changed.emit(False)
         if emit_change:
             self.content_changed.emit()
 

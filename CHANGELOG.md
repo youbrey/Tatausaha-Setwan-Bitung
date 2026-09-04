@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.1 — 2026-09-04
+
+- Mengubah seleksi dua atau lebih foto menjadi satu objek kolase dengan satu
+  bingkai luar, sehingga drag dan resize diterapkan pada seluruh foto sekaligus.
+- Mempertahankan posisi, ukuran, dan jarak relatif semua frame ketika bingkai
+  kolase dipindahkan atau diubah ukurannya.
+- Menampilkan lembar kertas putih sebagai objek scene nyata beserta batas dan
+  bayangannya agar ukuran kertas, margin, dan kolase pada kanvas sama dengan
+  pratinjau serta hasil ekspor.
+- Menambahkan klik di luar bingkai atau tombol selesai untuk keluar dari mode
+  transformasi kolase tanpa menyisakan pegangan pada setiap foto.
+
 ## 0.11.0 — 2026-09-04
 
 - Menambahkan delapan pegangan sisi dan sudut pada setiap frame foto agar lebar

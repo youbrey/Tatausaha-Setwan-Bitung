@@ -100,6 +100,7 @@ def _template_icon(template_id: str, size: QSize = QSize(184, 104)) -> QIcon:
 
 class CanvasView(QGraphicsView):
     files_dropped = Signal(list)
+    selection_gesture_finished = Signal()
 
     def __init__(self, scene: DocumentScene):
         super().__init__(scene)
@@ -127,6 +128,27 @@ class CanvasView(QGraphicsView):
             event.accept()
             return
         super().wheelEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        scene = self.scene()
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and isinstance(scene, DocumentScene)
+            and scene.collage_overlay is not None
+        ):
+            overlay = scene.collage_overlay
+            scene_point = self.mapToScene(event.position().toPoint())
+            overlay_point = overlay.mapFromScene(scene_point)
+            if not overlay.boundingRect().contains(overlay_point):
+                scene.finish_collage_resize()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        left_button = event.button() == Qt.MouseButton.LeftButton
+        super().mouseReleaseEvent(event)
+        if left_button:
+            # Rubber-band selection baru final sesudah handler bawaan selesai.
+            QTimer.singleShot(0, self.selection_gesture_finished.emit)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -886,7 +908,9 @@ class DocumentationPhotoPage(QWidget):
 
         self.scene.content_changed.connect(self._on_scene_changed)
         self.scene.crop_requested.connect(self._begin_inline_crop)
+        self.scene.collage_mode_changed.connect(self._sync_collage_mode_ui)
         self.scene.selectionChanged.connect(self._selection_changed)
+        self.view.selection_gesture_finished.connect(self._activate_selected_group)
         self.scene.focusItemChanged.connect(lambda new, old, reason: self._on_scene_changed() if isinstance(old, TextItem) else None)
 
     def _build_left_panel(self) -> QWidget:
@@ -1211,7 +1235,8 @@ class DocumentationPhotoPage(QWidget):
             "Kontrol kanvas:\n"
             "• Seret elemen untuk memindahkan\n"
             "• Seret pegangan putih untuk resize frame\n"
-            "• Ubah Ukuran Kolase untuk skala bersama\n"
+            "• Seleksi beberapa foto untuk satu bingkai kolase\n"
+            "• Seret bingkai luar untuk skala seluruh kolase\n"
             "• Klik ganda foto untuk crop langsung\n"
             "• Klik ganda teks untuk mengetik\n"
             "• Roda mouse saat crop untuk zoom\n"
@@ -1413,7 +1438,6 @@ class DocumentationPhotoPage(QWidget):
             self._finish_inline_crop(True)
         if self.scene.collage_overlay is not None:
             self.scene.finish_collage_resize()
-            self.resize_collage_button.setText("Ubah Ukuran Kolase")
         self._save_current_scene()
         self.current_page_index = index
         self._load_current_scene()
@@ -1919,10 +1943,16 @@ class DocumentationPhotoPage(QWidget):
             self._finish_inline_crop(True)
         if self.scene.collage_overlay is not None:
             self.scene.finish_collage_resize()
-            self.resize_collage_button.setText("Ubah Ukuran Kolase")
             self.status_text("Ukuran dan posisi kolase diterapkan.")
             return
-        overlay = self.scene.begin_collage_resize()
+        selected_photos = [
+            item
+            for item in self.scene.selectedItems()
+            if isinstance(item, PhotoItem) and not item.data.get("locked")
+        ]
+        overlay = self.scene.begin_collage_resize(
+            selected_photos if len(selected_photos) >= 2 else None
+        )
         if overlay is None:
             QMessageBox.information(
                 self,
@@ -1930,9 +1960,33 @@ class DocumentationPhotoPage(QWidget):
                 "Tambahkan atau buat kolase foto terlebih dahulu.",
             )
             return
-        self.resize_collage_button.setText("Selesai Ubah Ukuran")
         self.status_text(
             "Mode ukuran kolase aktif: seret bagian tengah untuk memindahkan atau pegangan ungu untuk mengubah ukuran. Tahan Shift agar rasio tetap."
+        )
+
+    def _activate_selected_group(self) -> None:
+        """Ubah hasil seleksi beberapa foto menjadi satu objek kolase."""
+
+        if self._active_crop_item is not None or self.scene.collage_overlay is not None:
+            return
+        photos = [
+            item
+            for item in self.scene.selectedItems()
+            if isinstance(item, PhotoItem) and not item.data.get("locked")
+        ]
+        if len(photos) < 2:
+            return
+        overlay = self.scene.begin_collage_resize(photos)
+        if overlay is not None:
+            self.status_text(
+                f"{len(photos)} foto dipilih sebagai satu kolase. Seret bingkai luar untuk mengubah seluruh kolase secara bersamaan."
+            )
+
+    def _sync_collage_mode_ui(self, active: bool) -> None:
+        if not hasattr(self, "resize_collage_button"):
+            return
+        self.resize_collage_button.setText(
+            "Selesai Ubah Ukuran" if active else "Ubah Ukuran Kolase"
         )
 
     def _reset_editor_mode_ui(self) -> None:

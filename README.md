@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.11.0 — Editor kolase dan crop langsung bergaya Canva**.
+Versi source saat ini: **0.11.1 — Transformasi grup dan kanvas kertas WYSIWYG**.
 
 ## Menu aplikasi
 
@@ -42,8 +42,11 @@ browser terpisah.
 - Media tray lokal dengan thumbnail.
 - Resize setiap frame melalui delapan pegangan sisi/sudut atau ukuran presisi
   lebar dan tinggi dalam mm, dengan opsi mempertahankan rasio.
-- Mode ukuran kolase untuk memindahkan dan menskalakan seluruh kumpulan foto
-  langsung di kanvas; tahan Shift untuk mempertahankan rasio kolase.
+- Seleksi dua atau lebih foto otomatis berubah menjadi satu bingkai kolase;
+  pemindahan dan resize bingkai berlaku pada seluruh foto serta mempertahankan
+  posisi dan jarak relatifnya. Tahan Shift untuk mempertahankan rasio kolase.
+- Lembar kertas putih, rasio ukuran A4/F4/Letter/Legal, margin, dan area kolase
+  ditampilkan nyata di kanvas sesuai dengan pratinjau dan hasil ekspor.
 - Crop langsung bergaya Canva: area luar frame diredupkan, garis bantu sepertiga
   ditampilkan, foto dapat diseret, di-zoom dengan roda/slider, dirotasi, direset,
   dibatalkan, atau diterapkan tanpa membuka dialog terpisah.
