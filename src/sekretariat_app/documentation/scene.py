@@ -401,6 +401,11 @@ class PhotoItem(QGraphicsObject):
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         super().hoverMoveEvent(event)
 
+    def hoverLeaveEvent(self, event) -> None:
+        if not self._resize_handle:
+            self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._crop_mode:
             self._crop_drag_position = event.pos()
@@ -693,9 +698,30 @@ class CollageResizeOverlay(QGraphicsObject):
 
 
 class TextItem(QGraphicsTextItem):
+    changed = Signal()
+
+    HANDLE = 4.0
+    MIN_WIDTH = 15.0
+    MIN_FONT_SIZE = 6.0
+    MAX_FONT_SIZE = 144.0
+    _HANDLE_CURSORS = {
+        "top_left": Qt.CursorShape.SizeFDiagCursor,
+        "top_right": Qt.CursorShape.SizeBDiagCursor,
+        "right": Qt.CursorShape.SizeHorCursor,
+        "bottom_right": Qt.CursorShape.SizeFDiagCursor,
+        "bottom_left": Qt.CursorShape.SizeBDiagCursor,
+        "left": Qt.CursorShape.SizeHorCursor,
+    }
+
     def __init__(self, data: dict):
         super().__init__()
         self.data = data
+        self._resize_handle = ""
+        self._start_text_rect = QRectF()
+        self._start_text_width = 0.0
+        self._start_font_size = 0.0
+        self._start_local_to_scene = QTransform()
+        self._start_scene_to_local = QTransform()
         self.setPlainText(str(data.get("text", "Teks")))
         self.setTextWidth(float(data.get("width", 120.0)))
         self.setPos(float(data.get("x", 25.0)), float(data.get("y", 25.0)))
@@ -708,8 +734,42 @@ class TextItem(QGraphicsTextItem):
             | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
+        self.setAcceptHoverEvents(True)
         self.apply_font()
         self.set_locked(bool(data.get("locked", False)))
+
+    def _content_rect(self) -> QRectF:
+        return QRectF(super().boundingRect())
+
+    def boundingRect(self) -> QRectF:
+        extra = self.HANDLE / 2.0 + 1.0
+        return self._content_rect().adjusted(-extra, -extra, extra, extra)
+
+    def _handle_rects(self) -> dict[str, QRectF]:
+        rect = self._content_rect()
+        half = self.HANDLE / 2.0
+        left, right = rect.left(), rect.right()
+        top, center_y, bottom = rect.top(), rect.center().y(), rect.bottom()
+        return {
+            "top_left": QRectF(left - half, top - half, self.HANDLE, self.HANDLE),
+            "top_right": QRectF(right - half, top - half, self.HANDLE, self.HANDLE),
+            "right": QRectF(right - half, center_y - half, self.HANDLE, self.HANDLE),
+            "bottom_right": QRectF(right - half, bottom - half, self.HANDLE, self.HANDLE),
+            "bottom_left": QRectF(left - half, bottom - half, self.HANDLE, self.HANDLE),
+            "left": QRectF(left - half, center_y - half, self.HANDLE, self.HANDLE),
+        }
+
+    def _handle_at(self, point: QPointF) -> str:
+        if (
+            not self.isSelected()
+            or self.data.get("locked")
+            or self.textInteractionFlags() != Qt.TextInteractionFlag.NoTextInteraction
+        ):
+            return ""
+        for name, rect in self._handle_rects().items():
+            if rect.contains(point):
+                return name
+        return ""
 
     def apply_font(self) -> None:
         font = QFont(str(self.data.get("font_family", "Arial")))
@@ -749,6 +809,126 @@ class TextItem(QGraphicsTextItem):
     def set_locked(self, locked: bool) -> None:
         self.data["locked"] = locked
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not locked)
+        self.update()
+
+    def hoverMoveEvent(self, event) -> None:
+        handle = self._handle_at(event.pos())
+        if handle:
+            self.setCursor(self._HANDLE_CURSORS[handle])
+        elif self.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        if not self._resize_handle:
+            self.unsetCursor()
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        handle = self._handle_at(event.pos())
+        if event.button() == Qt.MouseButton.LeftButton and handle:
+            self._resize_handle = handle
+            self._start_text_rect = self._content_rect()
+            self._start_text_width = max(self.MIN_WIDTH, self.textWidth())
+            self._start_font_size = max(
+                self.MIN_FONT_SIZE,
+                float(self.data.get("font_size", 14.0)),
+            )
+            self._start_local_to_scene = self.sceneTransform()
+            self._start_scene_to_local, _ok = self._start_local_to_scene.inverted()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if not self._resize_handle:
+            super().mouseMoveEvent(event)
+            return
+        point = self._start_scene_to_local.map(event.scenePos())
+        handle = self._resize_handle
+        if handle in {"left", "right"}:
+            if handle == "left":
+                width = self._start_text_rect.right() - point.x()
+                start_anchor = QPointF(
+                    self._start_text_rect.right(),
+                    self._start_text_rect.top(),
+                )
+            else:
+                width = point.x() - self._start_text_rect.left()
+                start_anchor = QPointF(
+                    self._start_text_rect.left(),
+                    self._start_text_rect.top(),
+                )
+            self.setTextWidth(max(self.MIN_WIDTH, width))
+            self.data["width"] = self.textWidth()
+            new_rect = self._content_rect()
+            new_anchor = QPointF(
+                new_rect.right() if handle == "left" else new_rect.left(),
+                new_rect.top(),
+            )
+        else:
+            start_corner = {
+                "top_left": self._start_text_rect.topLeft(),
+                "top_right": self._start_text_rect.topRight(),
+                "bottom_right": self._start_text_rect.bottomRight(),
+                "bottom_left": self._start_text_rect.bottomLeft(),
+            }[handle]
+            start_anchor = {
+                "top_left": self._start_text_rect.bottomRight(),
+                "top_right": self._start_text_rect.bottomLeft(),
+                "bottom_right": self._start_text_rect.topLeft(),
+                "bottom_left": self._start_text_rect.topRight(),
+            }[handle]
+            start_distance = max(
+                1.0,
+                math.hypot(
+                    start_corner.x() - start_anchor.x(),
+                    start_corner.y() - start_anchor.y(),
+                ),
+            )
+            scale = math.hypot(
+                point.x() - start_anchor.x(),
+                point.y() - start_anchor.y(),
+            ) / start_distance
+            font_size = max(
+                self.MIN_FONT_SIZE,
+                min(self.MAX_FONT_SIZE, self._start_font_size * scale),
+            )
+            scale = font_size / self._start_font_size
+            self.data["font_size"] = font_size
+            self.data["width"] = max(self.MIN_WIDTH, self._start_text_width * scale)
+            self.setTextWidth(float(self.data["width"]))
+            self.apply_font()
+            new_rect = self._content_rect()
+            new_anchor = {
+                "top_left": new_rect.bottomRight(),
+                "top_right": new_rect.bottomLeft(),
+                "bottom_right": new_rect.topLeft(),
+                "bottom_left": new_rect.topRight(),
+            }[handle]
+
+        desired_anchor_scene = self._start_local_to_scene.map(start_anchor)
+        current_anchor_scene = self.mapToScene(new_anchor)
+        scene_delta = desired_anchor_scene - current_anchor_scene
+        current_origin_scene = self.mapToScene(QPointF(0.0, 0.0))
+        target_origin_scene = current_origin_scene + scene_delta
+        self.setPos(
+            self.parentItem().mapFromScene(target_origin_scene)
+            if self.parentItem()
+            else target_origin_scene
+        )
+        self.update()
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self._resize_handle:
+            self._resize_handle = ""
+            self.unsetCursor()
+            self.changed.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+        self.changed.emit()
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if not self.data.get("locked"):
@@ -760,15 +940,43 @@ class TextItem(QGraphicsTextItem):
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         self.data["text"] = self.toPlainText()
         super().focusOutEvent(event)
+        self.changed.emit()
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None) -> None:
+        content_rect = self._content_rect()
         background = QColor(str(self.data.get("background", "#00ffffff")))
         if background.alpha() > 0:
-            painter.fillRect(self.boundingRect(), background)
+            painter.fillRect(content_rect, background)
         super().paint(painter, option, widget)
         if self.isSelected():
             painter.setPen(QPen(QColor("#0284c7"), 0.7, Qt.PenStyle.DashLine))
-            painter.drawRect(self.boundingRect())
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(content_rect)
+            if not self.data.get("locked"):
+                painter.setBrush(QColor("#ffffff"))
+                painter.setPen(QPen(QColor("#0284c7"), 0.7))
+                for handle_rect in self._handle_rects().values():
+                    painter.drawRect(handle_rect)
+
+    def itemChange(self, change, value):
+        if (
+            change == QGraphicsItem.GraphicsItemChange.ItemPositionChange
+            and self.scene()
+            and abs(self.rotation() % 360.0) < 0.001
+        ):
+            paper = getattr(self.scene(), "paper_rect", self.scene().sceneRect())
+            rect = self._content_rect()
+            position = value
+            x = max(
+                paper.left() - rect.left(),
+                min(position.x(), paper.right() - rect.right()),
+            )
+            y = max(
+                paper.top() - rect.top(),
+                min(position.y(), paper.bottom() - rect.bottom()),
+            )
+            return QPointF(x, y)
+        return super().itemChange(change, value)
 
     def to_data(self) -> dict:
         self.data.update(
@@ -935,6 +1143,7 @@ class DocumentScene(QGraphicsScene):
     def add_element(self, data: dict) -> QGraphicsItem:
         if data.get("kind") == "text":
             item = TextItem(data)
+            item.changed.connect(self.content_changed)
         else:
             item = PhotoItem(data)
             item.changed.connect(self.content_changed)
@@ -944,6 +1153,7 @@ class DocumentScene(QGraphicsScene):
 
     def add_text(self, text: str = "Klik dua kali untuk mengubah teks") -> TextItem:
         item = TextItem(TextElement(text=text).__dict__)
+        item.changed.connect(self.content_changed)
         self.addItem(item)
         item.setSelected(True)
         self.content_changed.emit()

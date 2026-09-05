@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.12.0 — 2026-09-05
+
+- Menambahkan checkbox pada setiap foto di Media serta perintah Tandai Semua
+  dan Lepas Semua Tanda; auto-kolase hanya memakai foto yang dicentang.
+- Menyimpan status media bertanda ke proyek dan arsip ZIP, termasuk migrasi
+  proyek lama yang secara aman menandai seluruh media yang sudah ada.
+- Menambahkan enam pegangan pada frame teks: empat sudut menskalakan ukuran
+  huruf dan frame, sedangkan sisi kiri/kanan mengubah lebar pembungkus teks.
+- Menampilkan printer yang dibaca langsung dari Windows pada toolbar dan
+  menyediakan deteksi ulang tanpa memulai ulang aplikasi.
+- Mengubah pencetakan agar memakai printer native, ukuran halaman proyek, mode
+  full-page, dan render scene yang sama dengan canvas; ukuran tidak lagi
+  diperkecil otomatis ke printable-area printer.
+- Menolak pencetakan apabila driver mengganti atau tidak mendukung ukuran kertas
+  proyek, sehingga hasil dengan skala fisik yang salah tidak terkirim diam-diam.
+
 ## 0.11.1 — 2026-09-04
 
 - Mengubah seleksi dua atau lebih foto menjadi satu objek kolase dengan satu

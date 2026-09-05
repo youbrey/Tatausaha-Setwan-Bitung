@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QShortcut,
     QTransform,
 )
+from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -506,15 +507,16 @@ class PageSetupDialog(QDialog):
 class AutoCollageDialog(QDialog):
     """Studio auto-kolase dengan preview foto nyata sebelum diterapkan."""
 
-    def __init__(self, project: DocumentProject, parent=None):
+    def __init__(self, project: DocumentProject, media_paths: list[str], parent=None):
         super().__init__(parent)
         self.project = project
+        self.media_paths = list(media_paths)
         self.setWindowTitle("Studio Auto Kolase Foto")
         self.resize(980, 720)
         layout = QVBoxLayout(self)
         width_mm, height_mm = project.page_size_mm
         heading = QLabel(
-            f"{len(project.media)} foto terpilih  ·  {project.paper_size} "
+            f"{len(self.media_paths)} foto ditandai  ·  {project.paper_size} "
             f"{width_mm:g} × {height_mm:g} mm  ·  {project.orientation.title()}"
         )
         heading.setObjectName("SectionTitle")
@@ -593,7 +595,7 @@ class AutoCollageDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        preferred_count = min(len(project.media), 8)
+        preferred_count = min(len(self.media_paths), 8)
         preferred = next(
             (index for index, template in enumerate(TEMPLATES) if len(template.cells) == preferred_count),
             next((index for index, template in enumerate(TEMPLATES) if template.template_id == "grid-4"), 0),
@@ -630,7 +632,7 @@ class AutoCollageDialog(QDialog):
         scene.configure_page(width, height, margins, "#ffffff", self.project.letterhead)
         scene.apply_template(
             template.template_id,
-            self.project.media[: len(template.cells)],
+            self.media_paths[: len(template.cells)],
             gap=self.gap.value(),
             width_percent=self.width_percent.value(),
             height_percent=self.height_percent.value(),
@@ -644,7 +646,7 @@ class AutoCollageDialog(QDialog):
         )
         scene.clear()
         self.preview.setPixmap(pixmap)
-        pages = max(1, (len(self.project.media) + len(template.cells) - 1) // len(template.cells))
+        pages = max(1, (len(self.media_paths) + len(template.cells) - 1) // len(template.cells))
         self.preview_summary.setText(
             f"{template.name} · {len(template.cells)} foto/halaman · estimasi {pages} halaman"
         )
@@ -805,11 +807,26 @@ class DocumentationPhotoPage(QWidget):
         pdf = QPushButton("Ekspor PDF")
         pdf.clicked.connect(self.export_pdf)
         tools.addWidget(pdf)
-        print_button = QPushButton("Cetak")
-        print_button.setObjectName("PrimaryButton")
-        print_button.clicked.connect(self.print_document)
-        tools.addWidget(print_button)
         toolbar_layout.addLayout(tools)
+
+        printer_tools = QHBoxLayout()
+        printer_tools.setSpacing(6)
+        printer_tools.addStretch()
+        printer_tools.addWidget(QLabel("Printer Windows:"))
+        self.printer_combo = QComboBox()
+        self.printer_combo.setMinimumWidth(180)
+        self.printer_combo.setToolTip("Printer yang terdeteksi dari Windows")
+        printer_tools.addWidget(self.printer_combo)
+        refresh_printers = QToolButton()
+        refresh_printers.setText("↻")
+        refresh_printers.setToolTip("Deteksi ulang printer")
+        refresh_printers.clicked.connect(lambda: self._refresh_printers(True))
+        printer_tools.addWidget(refresh_printers)
+        self.print_button = QPushButton("Cetak")
+        self.print_button.setObjectName("PrimaryButton")
+        self.print_button.clicked.connect(self.print_document)
+        printer_tools.addWidget(self.print_button)
+        toolbar_layout.addLayout(printer_tools)
 
         edit_tools = QHBoxLayout()
         edit_tools.setSpacing(6)
@@ -912,6 +929,7 @@ class DocumentationPhotoPage(QWidget):
         self.scene.selectionChanged.connect(self._selection_changed)
         self.view.selection_gesture_finished.connect(self._activate_selected_group)
         self.scene.focusItemChanged.connect(lambda new, old, reason: self._on_scene_changed() if isinstance(old, TextItem) else None)
+        self._refresh_printers()
 
     def _build_left_panel(self) -> QWidget:
         panel = QFrame()
@@ -1068,7 +1086,20 @@ class DocumentationPhotoPage(QWidget):
         self.media_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.media_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.media_list.itemDoubleClicked.connect(self._assign_media_item)
+        self.media_list.itemChanged.connect(self._media_check_changed)
         layout.addWidget(self.media_list, 1)
+        self.media_selection_summary = QLabel("0 dari 0 foto ditandai untuk auto-kolase")
+        self.media_selection_summary.setObjectName("MutedText")
+        self.media_selection_summary.setWordWrap(True)
+        layout.addWidget(self.media_selection_summary)
+        mark_row = QHBoxLayout()
+        mark_all = QPushButton("Tandai Semua")
+        clear_marks = QPushButton("Lepas Semua Tanda")
+        mark_all.clicked.connect(lambda: self._set_all_media_marked(True))
+        clear_marks.clicked.connect(lambda: self._set_all_media_marked(False))
+        mark_row.addWidget(mark_all)
+        mark_row.addWidget(clear_marks)
+        layout.addLayout(mark_row)
         assign = QPushButton("Pasang ke Slot Terpilih")
         assign.setObjectName("PrimaryButton")
         assign.clicked.connect(self.assign_selected_media)
@@ -1237,6 +1268,8 @@ class DocumentationPhotoPage(QWidget):
             "• Seret pegangan putih untuk resize frame\n"
             "• Seleksi beberapa foto untuk satu bingkai kolase\n"
             "• Seret bingkai luar untuk skala seluruh kolase\n"
+            "• Seret sudut teks untuk mengubah ukuran huruf\n"
+            "• Seret sisi teks untuk mengatur lebar\n"
             "• Klik ganda foto untuk crop langsung\n"
             "• Klik ganda teks untuk mengetik\n"
             "• Roda mouse saat crop untuk zoom\n"
@@ -1549,7 +1582,15 @@ class DocumentationPhotoPage(QWidget):
         if not self.project.media:
             QMessageBox.information(self, "Media kosong", "Impor foto terlebih dahulu sebelum membuat kolase otomatis.")
             return
-        dialog = AutoCollageDialog(self.project, self)
+        marked_media = self._marked_media_paths()
+        if not marked_media:
+            QMessageBox.information(
+                self,
+                "Belum ada foto ditandai",
+                "Centang minimal satu foto pada panel Media sebelum membuat kolase otomatis.",
+            )
+            return
+        dialog = AutoCollageDialog(self.project, marked_media, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._save_current_scene()
@@ -1564,8 +1605,8 @@ class DocumentationPhotoPage(QWidget):
             self.project.margins.bottom,
             self.project.margins.left,
         )
-        for offset in range(0, len(self.project.media), slot_count):
-            paths = self.project.media[offset : offset + slot_count]
+        for offset in range(0, len(marked_media), slot_count):
+            paths = marked_media[offset : offset + slot_count]
             page_number = len(generated) + 1
             page = DocumentPage(title=f"Halaman {page_number}")
             scene = DocumentScene()
@@ -1598,7 +1639,10 @@ class DocumentationPhotoPage(QWidget):
         self._refresh_all()
         self._push_history()
         self._schedule_autosave()
-        self.status_text(f"Kolase otomatis selesai: {len(generated)} halaman dari {len(self.project.media)} foto.")
+        self.status_text(
+            f"Kolase otomatis selesai: {len(generated)} halaman dari "
+            f"{len(marked_media)} foto yang ditandai."
+        )
 
     def import_photos(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, "Impor foto", "", IMAGE_FILTER)
@@ -1619,6 +1663,7 @@ class DocumentationPhotoPage(QWidget):
                 value = str(source.resolve())
                 if value not in self.project.media:
                     self.project.media.append(value)
+                    self.project.marked_media.append(value)
                     valid.append(value)
         if not valid:
             return
@@ -1628,8 +1673,13 @@ class DocumentationPhotoPage(QWidget):
         self.status_text(f"{len(valid)} foto ditambahkan ke Media.")
 
     def _refresh_media(self) -> None:
+        blocker = QSignalBlocker(self.media_list)
         self.media_list.clear()
         current_paths = set(self.project.media)
+        marked_paths = set(self.project.marked_media) & current_paths
+        self.project.marked_media = [
+            path for path in self.project.media if path in marked_paths
+        ]
         self._thumbnail_cache = {
             path: cached
             for path, cached in self._thumbnail_cache.items()
@@ -1648,7 +1698,54 @@ class DocumentationPhotoPage(QWidget):
             item = QListWidgetItem(cached[1], source.name)
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setToolTip(path)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if path in marked_paths
+                else Qt.CheckState.Unchecked
+            )
             self.media_list.addItem(item)
+        del blocker
+        self._update_media_selection_summary()
+
+    def _marked_media_paths(self) -> list[str]:
+        marked = set(self.project.marked_media)
+        return [path for path in self.project.media if path in marked]
+
+    def _media_check_changed(self, item: QListWidgetItem) -> None:
+        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path:
+            return
+        marked = set(self.project.marked_media)
+        if item.checkState() == Qt.CheckState.Checked:
+            marked.add(path)
+        else:
+            marked.discard(path)
+        self.project.marked_media = [
+            media_path for media_path in self.project.media if media_path in marked
+        ]
+        self._update_media_selection_summary()
+        self._push_history()
+        self._schedule_autosave()
+
+    def _set_all_media_marked(self, marked: bool) -> None:
+        self.project.marked_media = list(self.project.media) if marked else []
+        blocker = QSignalBlocker(self.media_list)
+        state = Qt.CheckState.Checked if marked else Qt.CheckState.Unchecked
+        for index in range(self.media_list.count()):
+            self.media_list.item(index).setCheckState(state)
+        del blocker
+        self._update_media_selection_summary()
+        self._push_history()
+        self._schedule_autosave()
+
+    def _update_media_selection_summary(self) -> None:
+        if not hasattr(self, "media_selection_summary"):
+            return
+        self.media_selection_summary.setText(
+            f"{len(self._marked_media_paths())} dari {len(self.project.media)} foto "
+            "ditandai untuk auto-kolase"
+        )
 
     def _assign_media_item(self, item: QListWidgetItem) -> None:
         self._assign_photo_path(str(item.data(Qt.ItemDataRole.UserRole)))
@@ -1681,6 +1778,9 @@ class DocumentationPhotoPage(QWidget):
         if not selected_paths:
             return
         self.project.media = [path for path in self.project.media if path not in selected_paths]
+        self.project.marked_media = [
+            path for path in self.project.marked_media if path not in selected_paths
+        ]
         self._refresh_media()
         self._push_history()
         self._schedule_autosave()
@@ -2137,15 +2237,72 @@ class DocumentationPhotoPage(QWidget):
         finally:
             self.setEnabled(True)
 
+    def _refresh_printers(self, show_status: bool = False) -> None:
+        current = str(self.printer_combo.currentData() or "")
+        detection_error = ""
+        try:
+            names = self.exporter.available_printer_names()
+            default_name = QPrinterInfo.defaultPrinter().printerName()
+        except Exception as exc:
+            names = []
+            default_name = ""
+            detection_error = str(exc)
+        blocker = QSignalBlocker(self.printer_combo)
+        self.printer_combo.clear()
+        if names:
+            for name in names:
+                label = f"{name} (Default)" if name == default_name else name
+                self.printer_combo.addItem(label, name)
+            preferred = current if current in names else default_name
+            index = self.printer_combo.findData(preferred)
+            self.printer_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.print_button.setEnabled(True)
+            self.printer_combo.setToolTip(
+                f"{len(names)} printer terdeteksi dari Windows"
+            )
+        else:
+            self.printer_combo.addItem(
+                "Spooler printer tidak tersedia"
+                if detection_error
+                else "Printer tidak ditemukan",
+                "",
+            )
+            self.print_button.setEnabled(False)
+            self.printer_combo.setToolTip(
+                "Tidak ada printer aktif yang dilaporkan oleh Windows"
+            )
+        del blocker
+        if show_status:
+            if names:
+                self.status_text(f"{len(names)} printer Windows berhasil dideteksi.")
+            else:
+                detail = f" ({detection_error})" if detection_error else ""
+                self.status_text(
+                    f"Printer tidak ditemukan oleh Windows{detail}.",
+                    error=True,
+                )
+
     def print_document(self) -> None:
         self._save_current_scene()
+        printer_name = str(self.printer_combo.currentData() or "")
+        if not printer_name:
+            self._refresh_printers(True)
+            return
         try:
-            printed = self.exporter.print_project(self.project, self)
+            printed = self.exporter.print_project(
+                self.project,
+                self,
+                printer_name,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Pencetakan gagal", str(exc))
+            self._refresh_printers()
             return
         if printed:
-            self.status_text("Dokumentasi Foto dikirim ke printer yang dipilih.")
+            self.status_text(
+                f"Dokumentasi Foto dikirim ke {printer_name} pada ukuran fisik "
+                f"{self.project.page_size_mm[0]:g} × {self.project.page_size_mm[1]:g} mm."
+            )
 
     def _fit_page(self) -> None:
         self.view.fit_page()

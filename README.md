@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.11.1 — Transformasi grup dan kanvas kertas WYSIWYG**.
+Versi source saat ini: **0.12.0 — Media bertanda, resize teks, dan cetak WYSIWYG**.
 
 ## Menu aplikasi
 
@@ -40,6 +40,8 @@ browser terpisah.
 - Kolase otomatis dari seluruh foto di panel Media menjadi beberapa halaman.
 - Impor satu atau banyak foto, impor folder, dan drag-and-drop dari Explorer.
 - Media tray lokal dengan thumbnail.
+- Checkbox pada setiap media; auto-kolase hanya memproses foto yang ditandai,
+  sedangkan foto lain tetap tersimpan di Media dan tidak masuk ke kolase.
 - Resize setiap frame melalui delapan pegangan sisi/sudut atau ukuran presisi
   lebar dan tinggi dalam mm, dengan opsi mempertahankan rasio.
 - Seleksi dua atau lebih foto otomatis berubah menjadi satu bingkai kolase;
@@ -52,6 +54,8 @@ browser terpisah.
   dibatalkan, atau diterapkan tanpa membuka dialog terpisah.
 - Border, warna border, sudut bulat, serta keterangan foto.
 - Teks bebas yang dapat dipindah, diedit langsung, dirotasi, dan dikunci.
+- Resize teks langsung di kanvas: pegangan sudut mengubah ukuran huruf dan frame
+  secara proporsional, sementara pegangan kiri/kanan mengatur lebar teks.
 - Font, ukuran, lebar kotak, bold, italic, underline, alignment, jarak huruf,
   tinggi baris, warna, background, opacity, shadow, dan glow.
 - Kop surat opsional pada halaman pertama, dua logo, informasi instansi, alamat,
@@ -59,6 +63,9 @@ browser terpisah.
 - Tambah, duplikat, pindah, dan hapus halaman.
 - Undo/redo berbasis snapshot serta autosave lokal.
 - Simpan/muat `.dokufoto.json` dan ekspor/impor arsip `.zip` beserta foto.
+- Deteksi printer Windows langsung pada toolbar, pilihan printer aktif, dan
+  pencetakan native tanpa membuka Word. Canvas dirender ke ukuran kertas fisik
+  penuh tanpa diperkecil ke area cetak driver.
 - Impor kompatibel dengan proyek JSON dan arsip ZIP dari DokuFoto-React.
 - Ekspor WYSIWYG ke DOCX dan PDF menggunakan render halaman 300 DPI.
 - Pratinjau multipage dan cetak langsung melalui dialog printer Windows.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF
 from PySide6.QtGui import QPageLayout, QPageSize, QPainter, QPdfWriter
-from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import QWidget
 
 from sekretariat_app.documentation.models import DocumentProject
@@ -97,24 +97,101 @@ class DocumentationExporter:
             document.save(target)
         return target
 
-    def print_project(self, project: DocumentProject, parent: QWidget) -> bool:
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    @staticmethod
+    def available_printer_names() -> list[str]:
+        """Baca printer aktif langsung dari spooler/driver lokal Windows."""
+
+        return [
+            info.printerName()
+            for info in QPrinterInfo.availablePrinters()
+            if info.printerName()
+        ]
+
+    def print_project(
+        self,
+        project: DocumentProject,
+        parent: QWidget,
+        printer_name: str = "",
+    ) -> bool:
+        available = QPrinterInfo.availablePrinters()
+        if not available:
+            raise RuntimeError(
+                "Printer tidak ditemukan. Pastikan printer terpasang, aktif, dan "
+                "terlihat pada Settings > Bluetooth & devices > Printers & scanners."
+            )
+        selected_info = next(
+            (info for info in available if info.printerName() == printer_name),
+            None,
+        )
+        if printer_name and selected_info is None:
+            raise RuntimeError(
+                f"Printer {printer_name} tidak lagi ditemukan. Deteksi ulang printer lalu coba kembali."
+            )
+        if selected_info is None:
+            selected_info = QPrinterInfo.defaultPrinter()
+        if selected_info.isNull():
+            selected_info = available[0]
+        printer = QPrinter(selected_info, QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.NativeFormat)
+        printer.setDocName(project.title)
+        printer.setColorMode(QPrinter.ColorMode.Color)
+        printer.setFullPage(True)
         width_mm, height_mm = project.page_size_mm
         page_size = QPageSize(QSizeF(width_mm, height_mm), QPageSize.Unit.Millimeter, project.paper_size)
-        printer.setPageLayout(QPageLayout(page_size, QPageLayout.Orientation.Portrait, QMarginsF(0, 0, 0, 0)))
+        page_layout = QPageLayout(
+            page_size,
+            QPageLayout.Orientation.Portrait,
+            QMarginsF(0, 0, 0, 0),
+        )
+        if not printer.setPageLayout(page_layout):
+            raise RuntimeError(
+                f"Printer {selected_info.printerName()} tidak menerima ukuran kertas "
+                f"{width_mm:g} × {height_mm:g} mm."
+            )
         dialog = QPrintDialog(printer, parent)
         dialog.setWindowTitle("Cetak Dokumentasi Foto")
         if dialog.exec() != QPrintDialog.DialogCode.Accepted:
             return False
+        if not printer.isValid() or not printer.printerName():
+            raise RuntimeError("Printer yang dipilih tidak lagi tersedia atau drivernya tidak aktif.")
+
+        # Dialog driver dapat mengganti ukuran halaman. Terapkan kembali ukuran
+        # proyek supaya 1 mm pada canvas tetap 1 mm pada hasil cetak.
+        printer.setFullPage(True)
+        printer.setColorMode(QPrinter.ColorMode.Color)
+        if not printer.setPageLayout(page_layout):
+            raise RuntimeError(
+                f"Printer {printer.printerName()} tidak mendukung ukuran halaman proyek."
+            )
+        actual_size = printer.pageLayout().pageSize().size(QPageSize.Unit.Millimeter)
+        if (
+            abs(actual_size.width() - width_mm) > 0.75
+            or abs(actual_size.height() - height_mm) > 0.75
+        ):
+            raise RuntimeError(
+                "Driver printer mengubah ukuran kertas menjadi "
+                f"{actual_size.width():g} × {actual_size.height():g} mm. "
+                f"Pilih atau buat ukuran {width_mm:g} × {height_mm:g} mm pada driver printer."
+            )
         painter = QPainter(printer)
-        for index in range(len(project.pages)):
-            if index:
-                printer.newPage()
-            scene = self._scene_for_page(project, index)
-            target_rect = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
-            scene.render_to_painter(painter, target_rect)
-            scene.clear()
-        painter.end()
+        if not painter.isActive():
+            raise RuntimeError(f"Gagal membuka printer {printer.printerName()} untuk mencetak.")
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        try:
+            for index in range(len(project.pages)):
+                if index and not printer.newPage():
+                    raise RuntimeError(f"Printer gagal memulai halaman {index + 1}.")
+                scene = self._scene_for_page(project, index)
+                try:
+                    target_rect = QRectF(
+                        printer.pageLayout().fullRectPixels(printer.resolution())
+                    )
+                    scene.render_to_painter(painter, target_rect)
+                finally:
+                    scene.clear()
+        finally:
+            painter.end()
         return True
 
     def export_archive(self, project: DocumentProject, path: str | Path) -> Path:
@@ -135,6 +212,11 @@ class DocumentationExporter:
                     if element.get("kind") == "photo" and element.get("photo_path") in media_map:
                         element["photo_path"] = media_map[element["photo_path"]]
             payload["media"] = list(media_map.values())
+            payload["marked_media"] = [
+                media_map[path]
+                for path in project.marked_media
+                if path in media_map
+            ]
             payload["archive_format"] = "dokufoto-python-v1"
             archive.writestr("project.dokufoto.json", json.dumps(payload, ensure_ascii=False, indent=2))
         return target
@@ -162,10 +244,17 @@ class DocumentationExporter:
                     value = str(candidate.resolve())
                     if value not in project.media:
                         project.media.append(value)
+                        project.marked_media.append(value)
             return project
         media = [str((target_dir / name).resolve()) for name in payload.get("media", [])]
         mapping = dict(zip(payload.get("media", []), media))
         payload["media"] = media
+        if "marked_media" in payload:
+            payload["marked_media"] = [
+                mapping[name]
+                for name in payload.get("marked_media") or []
+                if name in mapping
+            ]
         for page in payload.get("pages", []):
             for element in page.get("elements", []):
                 if element.get("kind") == "photo" and element.get("photo_path") in mapping:

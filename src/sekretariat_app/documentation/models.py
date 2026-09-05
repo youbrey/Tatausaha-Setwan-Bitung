@@ -115,6 +115,7 @@ class DocumentProject:
     letterhead: dict[str, Any] = field(default_factory=default_letterhead)
     pages: list[DocumentPage] = field(default_factory=lambda: [DocumentPage()])
     media: list[str] = field(default_factory=list)
+    marked_media: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -148,6 +149,17 @@ class DocumentProject:
                     collage=dict(raw_page.get("collage") or {}),
                 )
             )
+        media = [str(path) for path in data.get("media") or []]
+        raw_marked_media = (
+            data.get("marked_media")
+            if "marked_media" in data
+            else media
+        )
+        marked_media = [
+            str(path)
+            for path in raw_marked_media or []
+            if str(path) in media
+        ]
         project = cls(
             id=data.get("id") or new_id("project"),
             title=data.get("title", "Dokumentasi Kegiatan"),
@@ -165,7 +177,8 @@ class DocumentProject:
             ),
             letterhead={**default_letterhead(), **(data.get("letterhead") or {})},
             pages=pages or [DocumentPage()],
-            media=[str(path) for path in data.get("media") or []],
+            media=media,
+            marked_media=marked_media,
             created_at=data.get("created_at") or datetime.now().isoformat(timespec="seconds"),
             updated_at=data.get("updated_at") or datetime.now().isoformat(timespec="seconds"),
         )
@@ -357,6 +370,7 @@ class DocumentProject:
             letterhead=letterhead,
             pages=pages or [DocumentPage()],
             media=media,
+            marked_media=list(media),
             created_at=str(data.get("createdAt", datetime.now().isoformat(timespec="seconds"))),
             updated_at=str(data.get("updatedAt", datetime.now().isoformat(timespec="seconds"))),
         )
