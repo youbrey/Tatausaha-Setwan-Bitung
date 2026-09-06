@@ -4,7 +4,7 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
-from PySide6.QtCore import QRectF, QSize, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -711,6 +711,15 @@ class DocumentationPhotoPage(QWidget):
         self._restoring = False
         self._active_crop_item: PhotoItem | None = None
         self._thumbnail_cache: dict[str, tuple[int, QIcon]] = {}
+        self._media_icon_items: dict[str, QListWidgetItem] = {}
+        self._thumbnail_timer = QTimer(self)
+        self._thumbnail_timer.setSingleShot(True)
+        self._thumbnail_timer.setInterval(40)
+        self._thumbnail_timer.timeout.connect(self._load_visible_thumbnails)
+        self._letterhead_timer = QTimer(self)
+        self._letterhead_timer.setSingleShot(True)
+        self._letterhead_timer.setInterval(350)
+        self._letterhead_timer.timeout.connect(self._update_letterhead)
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(650)
@@ -1083,10 +1092,13 @@ class DocumentationPhotoPage(QWidget):
         self.media_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.media_list.setIconSize(QSize(72, 72))
         self.media_list.setGridSize(QSize(105, 104))
+        self.media_list.setUniformItemSizes(True)
         self.media_list.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.media_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.media_list.itemDoubleClicked.connect(self._assign_media_item)
         self.media_list.itemChanged.connect(self._media_check_changed)
+        self.media_list.viewport().installEventFilter(self)
+        self.media_list.verticalScrollBar().valueChanged.connect(lambda _: self._thumbnail_timer.start())
         layout.addWidget(self.media_list, 1)
         self.media_selection_summary = QLabel("0 dari 0 foto ditandai untuk auto-kolase")
         self.media_selection_summary.setObjectName("MutedText")
@@ -1372,7 +1384,7 @@ class DocumentationPhotoPage(QWidget):
         del blockers
 
     def _schedule_letterhead_update(self) -> None:
-        QTimer.singleShot(350, self._update_letterhead)
+        self._letterhead_timer.start()
 
     def _update_letterhead(self) -> None:
         if self._restoring:
@@ -1432,12 +1444,14 @@ class DocumentationPhotoPage(QWidget):
             self.status_text("Autosave gagal; simpan proyek secara manual.", error=True)
 
     def _push_history(self, force: bool = False) -> None:
-        snapshot = json.dumps(self.project.to_dict(), ensure_ascii=False, sort_keys=True)
+        state = self.project.to_dict()
+        state.pop("updated_at", None)
+        snapshot = json.dumps(state, ensure_ascii=False, sort_keys=True)
         if not force and self.history_index >= 0 and self.history[self.history_index] == snapshot:
             return
         del self.history[self.history_index + 1 :]
         self.history.append(snapshot)
-        if len(self.history) > 30:
+        while len(self.history) > 1 and (len(self.history) > 30 or sum(map(len, self.history)) * 4 > 16 * 1024 * 1024):
             self.history.pop(0)
         self.history_index = len(self.history) - 1
         self._update_history_buttons()
@@ -1674,6 +1688,7 @@ class DocumentationPhotoPage(QWidget):
 
     def _refresh_media(self) -> None:
         blocker = QSignalBlocker(self.media_list)
+        self._media_icon_items.clear()
         self.media_list.clear()
         current_paths = set(self.project.media)
         marked_paths = set(self.project.marked_media) & current_paths
@@ -1687,15 +1702,7 @@ class DocumentationPhotoPage(QWidget):
         }
         for path in self.project.media:
             source = Path(path)
-            try:
-                modified = source.stat().st_mtime_ns
-            except OSError:
-                modified = 0
-            cached = self._thumbnail_cache.get(path)
-            if cached is None or cached[0] != modified:
-                cached = (modified, QIcon(_scaled_pixmap(path, QSize(160, 120))))
-                self._thumbnail_cache[path] = cached
-            item = QListWidgetItem(cached[1], source.name)
+            item = QListWidgetItem(source.name)
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setToolTip(path)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -1707,6 +1714,78 @@ class DocumentationPhotoPage(QWidget):
             self.media_list.addItem(item)
         del blocker
         self._update_media_selection_summary()
+        self._thumbnail_timer.start()
+
+    def eventFilter(self, watched, event):
+        if hasattr(self, "media_list") and watched is self.media_list.viewport():
+            if event.type() in {QEvent.Type.Show, QEvent.Type.Resize}:
+                self._thumbnail_timer.start()
+        return super().eventFilter(watched, event)
+
+    def _load_visible_thumbnails(self) -> None:
+        if not self.media_list.isVisible():
+            return
+        viewport = self.media_list.viewport().rect().adjusted(0, -104, 0, 104)
+        visible = {}
+        for row in range(self.media_list.count()):
+            item = self.media_list.item(row)
+            if self.media_list.visualItemRect(item).intersects(viewport):
+                visible[str(item.data(Qt.ItemDataRole.UserRole))] = item
+        blocker = QSignalBlocker(self.media_list)
+        for path, item in list(self._media_icon_items.items()):
+            if path not in visible:
+                item.setIcon(QIcon())
+                del self._media_icon_items[path]
+        decoded = 0
+        pending = False
+        for path, item in visible.items():
+            if path in self._media_icon_items:
+                continue
+            try:
+                modified = Path(path).stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            cached = self._thumbnail_cache.pop(path, None)
+            if cached is None or cached[0] != modified:
+                if decoded >= 4:
+                    pending = True
+                    continue
+                cached = (modified, QIcon(_scaled_pixmap(path, QSize(144, 144))))
+                decoded += 1
+            self._thumbnail_cache[path] = cached
+            item.setIcon(cached[1])
+            self._media_icon_items[path] = item
+        while len(self._thumbnail_cache) > 96:
+            self._thumbnail_cache.pop(next(iter(self._thumbnail_cache)))
+        del blocker
+        if pending:
+            self._thumbnail_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._thumbnail_timer.stop()
+        self._thumbnail_cache.clear()
+        blocker = QSignalBlocker(self.media_list)
+        for item in self._media_icon_items.values():
+            item.setIcon(QIcon())
+        self._media_icon_items.clear()
+        del blocker
+        for item in self.scene.items():
+            if isinstance(item, PhotoItem):
+                item.release_image_cache()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._thumbnail_timer.start()
+        self.view.viewport().update()
+
+    def shutdown(self) -> None:
+        if self._letterhead_timer.isActive():
+            self._letterhead_timer.stop()
+            self._update_letterhead()
+        self._autosave_timer.stop()
+        self._thumbnail_timer.stop()
+        self._write_autosave()
 
     def _marked_media_paths(self) -> list[str]:
         marked = set(self.project.marked_media)

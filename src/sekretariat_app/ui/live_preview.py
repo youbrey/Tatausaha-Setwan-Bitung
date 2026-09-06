@@ -105,6 +105,7 @@ class LiveDocumentPreview(QFrame):
         self._pdf_document: fitz.Document | None = None
         self._page_index = 0
         self._zoom = 1.0
+        self._raster_key = None
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -416,7 +417,7 @@ class LiveDocumentPreview(QFrame):
         self._render_page()
 
     def _render_page(self) -> None:
-        if self._pdf_document is None or len(self._pdf_document) == 0:
+        if not self._active or self._pdf_document is None or len(self._pdf_document) == 0:
             self._update_controls()
             return
         page = self._pdf_document[self._page_index]
@@ -424,22 +425,29 @@ class LiveDocumentPreview(QFrame):
         fit_width = viewport_width / max(1.0, float(page.rect.width))
         scale = max(0.45, min(2.8, fit_width * self._zoom))
         estimated_pixels = float(page.rect.width * page.rect.height) * scale * scale
-        max_pixels = 3_500_000
+        max_pixels = 2_000_000
         if estimated_pixels > max_pixels:
             scale *= math.sqrt(max_pixels / estimated_pixels)
-        rendered = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        key = (self._page_index, round(scale, 4))
+        if key == self._raster_key:
+            self._update_controls()
+            return
+        rendered = page.get_pixmap(matrix=fitz.Matrix(scale, scale), colorspace=fitz.csRGB, alpha=False)
+        # samples_mv borrows the MuPDF buffer until QPixmap has copied it.
+        # Avoid both a samples bytes copy and an additional QImage.copy().
         image = QImage(
-            rendered.samples,
+            rendered.samples_mv,
             rendered.width,
             rendered.height,
             rendered.stride,
             QImage.Format.Format_RGB888,
-        ).copy()
+        )
         pixmap = QPixmap.fromImage(image)
         del image, rendered
         self.canvas.setText("")
         self.canvas.setPixmap(pixmap)
         self.canvas.setFixedSize(pixmap.size())
+        self._raster_key = key
         self._update_controls()
 
     def resizeEvent(self, event) -> None:
@@ -483,6 +491,7 @@ class LiveDocumentPreview(QFrame):
         self._update_controls()
 
     def _close_pdf(self) -> None:
+        self._raster_key = None
         if self._pdf_document is not None:
             self._pdf_document.close()
             self._pdf_document = None
@@ -497,18 +506,28 @@ class LiveDocumentPreview(QFrame):
             shutil.rmtree(self._temporary_directory, ignore_errors=True)
             self._temporary_directory = None
 
+    def ready_to_close(self) -> bool:
+        if self._worker is not None and self._worker.isRunning():
+            self._timer.stop()
+            self._worker.requestInterruption()
+            return False
+        return True
+
     def shutdown(self) -> None:
         self._timer.stop()
         self._resize_timer.stop()
         self._active = False
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
-            if not self._worker.wait(10_000):
-                self._worker.terminate()
-                self._worker.wait(2_000)
+            # The shell waits for readiness without blocking Qt or terminating
+            # a thread that may still own Office/COM resources.
+            return
         self._close_pdf()
         self._cleanup_temporary_directory()
 
     def closeEvent(self, event) -> None:
+        if not self.ready_to_close():
+            event.ignore()
+            return
         self.shutdown()
         super().closeEvent(event)

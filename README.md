@@ -1,11 +1,11 @@
 # SIPS Terpadu — Sekretariat DPRD Kota Bitung
 
 Aplikasi desktop Windows berbasis Python dan PySide6 yang menyatukan navigasi
-SIPS, Rekapitulasi TPP, serta Dokumentasi Foto dalam satu shell modern. Semua
+SIPS, Rekapitulasi TPP, Dokumentasi Foto, serta Edit PDF dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.12.0 — Media bertanda, resize teks, dan cetak WYSIWYG**.
+Versi source saat ini: **0.13.0 — Edit PDF offline dan penghematan resource**.
 
 ## Menu aplikasi
 
@@ -20,12 +20,44 @@ Versi source saat ini: **0.12.0 — Media bertanda, resize teks, dan cetak WYSIW
 5. Rekapitulasi Surat Undangan
 6. Rekapitulasi TPP
 7. Dokumentasi Foto
-8. Kelola User
-9. Logout
+8. Edit PDF
+9. Kelola User
+10. Logout
 
 Menu **Dokumentasi Foto** berada tepat setelah **Rekapitulasi TPP**. Seluruh
 workspace tampil pada halaman utama di samping sidebar, bukan pada jendela atau
 browser terpisah.
+
+## Edit PDF dan optimasi versi 0.13.0
+
+Menu **Edit PDF** berada setelah Dokumentasi Foto. Tersedia merge/split,
+pengurutan/duplikasi/penghapusan/rotasi halaman, sisip halaman kosong, tambah
+atau ganti blok teks, sisip gambar, proteksi AES-256, serta konversi
+PDF ↔ Word, PDF ↔ Excel, dan gambar ↔ PDF. Sumber tidak ditimpa; perubahan
+disimpan sebagai salinan. Lihat [panduan dan batas fitur](docs/EDIT_PDF.md).
+
+**Batas kemampuan:** editor teks belum setara seluruh Adobe Acrobat; OCR,
+reflow paragraf kompleks, dan pemeliharaan semua font khusus belum tersedia.
+PDF → Word editable mengekstrak teks, PDF → Excel mengekstrak tabel.
+Word/Excel → PDF memerlukan Microsoft Office atau LibreOffice lokal.
+Unprotect memerlukan password pemilik yang benar.
+
+Perubahan untuk mengurangi beban:
+
+- Halaman dan impor modul berat dibuat saat menu pertama kali dibuka.
+- Pekerjaan Edit PDF berjalan satu per satu pada proses terpisah; hasil preview
+  maksimal 2 megapiksel dan hanya halaman aktif yang dirender.
+- Cache preview surat menghindari render ulang pada halaman/skala yang sama;
+  penyalinan buffer gambar berulang dikurangi.
+- Thumbnail Media dimuat bertahap hanya di sekitar area yang terlihat, dengan
+  cache maksimal 96 gambar; cache foto dilepas saat menu disembunyikan.
+- Resolusi foto untuk layar dibatasi terpisah dari ekspor/cetak, debounce kop
+  surat memakai satu timer, dan history foto dibatasi jumlah serta ukurannya.
+- Logout menutup workspace dan membersihkan resource halaman yang telah dibuka.
+
+Sesuai permintaan, perubahan ini ditinjau secara statis tanpa menjalankan test,
+aplikasi, atau build. Belum ada angka benchmark atau verifikasi printer/Office
+Windows; penghematan aktual bergantung pada dokumen, foto, dan perangkat.
 
 ## Kemampuan Dokumentasi Foto
 
@@ -37,7 +69,7 @@ browser terpisah.
 - Studio auto-kolase dengan preview foto nyata sebelum diterapkan.
 - Mini-preview visual untuk setiap gaya kisi, bukan daftar nama berbentuk teks.
 - Pengaturan lebar/tinggi seluruh kumpulan foto dan jarak antar-foto dalam mm.
-- Kolase otomatis dari seluruh foto di panel Media menjadi beberapa halaman.
+- Kolase otomatis dari foto yang ditandai di panel Media menjadi beberapa halaman.
 - Impor satu atau banyak foto, impor folder, dan drag-and-drop dari Explorer.
 - Media tray lokal dengan thumbnail.
 - Checkbox pada setiap media; auto-kolase hanya memproses foto yang ditandai,

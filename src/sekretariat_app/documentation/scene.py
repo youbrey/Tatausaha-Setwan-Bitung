@@ -189,9 +189,24 @@ class PhotoItem(QGraphicsObject):
         if int(self.data.get("image_rotation", 0)) % 180:
             width, height = height, width
         # Bucket mencegah decode ulang saat zoom/resize hanya berubah sedikit.
-        width = min(4096, math.ceil(width / 256) * 256)
-        height = min(4096, math.ceil(height / 256) * 256)
+        limit = self._image_limit()
+        width = min(limit, math.ceil(width / 256) * 256)
+        height = min(limit, math.ceil(height / 256) * 256)
         return QSize(width, height)
+
+    def _image_limit(self) -> int:
+        # Export/print keeps its existing resolution budget. Screen previews
+        # need fewer pixels, especially for many small frames on one page.
+        if self.scene() is None or not getattr(self.scene(), "show_guides", True):
+            return 4096
+        return 2048 if self._crop_mode else 1536
+
+    def release_image_cache(self) -> None:
+        self.prepareGeometryChange()
+        self._pixmap = QPixmap()
+        self._loaded_target = QSize()
+        self._loaded_path = ""
+        self._loaded_rotation = -1
 
     def _load_pixmap(self, painter: QPainter) -> QPixmap:
         path = str(self.data.get("photo_path", ""))
@@ -202,6 +217,7 @@ class PhotoItem(QGraphicsObject):
             and rotation == self._loaded_rotation
             and self._loaded_target.width() >= target.width()
             and self._loaded_target.height() >= target.height()
+            and max(self._pixmap.width(), self._pixmap.height()) <= self._image_limit()
         )
         if cache_is_sufficient:
             return self._pixmap
@@ -227,8 +243,8 @@ class PhotoItem(QGraphicsObject):
             scaled_width = max(1, round(original.width() * scale))
             scaled_height = max(1, round(original.height() * scale))
             largest = max(scaled_width, scaled_height)
-            if largest > 4096:
-                limit = 4096 / largest
+            if largest > self._image_limit():
+                limit = self._image_limit() / largest
                 scaled_width = max(1, round(scaled_width * limit))
                 scaled_height = max(1, round(scaled_height * limit))
             if scaled_width < original.width() or scaled_height < original.height():
@@ -798,11 +814,13 @@ class TextItem(QGraphicsTextItem):
         cursor.mergeBlockFormat(block_format)
         effect = str(self.data.get("effect", "none"))
         if effect in {"shadow", "glow"}:
-            shadow = QGraphicsDropShadowEffect()
+            shadow = self.graphicsEffect()
+            if not isinstance(shadow, QGraphicsDropShadowEffect):
+                shadow = QGraphicsDropShadowEffect()
+                self.setGraphicsEffect(shadow)
             shadow.setColor(QColor(str(self.data.get("effect_color", "#334155"))))
             shadow.setBlurRadius(10 if effect == "glow" else 5)
             shadow.setOffset(0 if effect == "glow" else 2, 0 if effect == "glow" else 2)
-            self.setGraphicsEffect(shadow)
         else:
             self.setGraphicsEffect(None)
 

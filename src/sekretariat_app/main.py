@@ -2,15 +2,10 @@ from __future__ import annotations
 
 import sys
 from importlib.resources import files
+from typing import TYPE_CHECKING
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QDialog
-
-from sekretariat_app.auth import UserRepository
-from sekretariat_app.config import APP_NAME, ORGANIZATION, database_path
-from sekretariat_app.ui.login import LoginDialog
-from sekretariat_app.ui.shell import ShellWindow
-
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QApplication
 
 def _resource(name: str) -> str:
     return str(files("sekretariat_app.resources").joinpath(name))
@@ -21,7 +16,21 @@ def _load_theme(app: QApplication) -> None:
 
 
 def main() -> int:
+    # Dispatch before importing the GUI, repositories, or document modules.
+    # A frozen --windowed build has no usable stdin/stdout for worker messages.
+    if "--pdf-worker" in sys.argv:
+        from sekretariat_app.pdf_tools.worker import main as worker_main
+        return worker_main()
+
+    from PySide6.QtGui import QIcon, QPixmapCache
+    from PySide6.QtWidgets import QApplication, QDialog
+    from sekretariat_app.auth import UserRepository
+    from sekretariat_app.config import APP_NAME, ORGANIZATION, database_path
+    from sekretariat_app.ui.login import LoginDialog
+    from sekretariat_app.ui.shell import ShellWindow
+
     app = QApplication(sys.argv)
+    QPixmapCache.setCacheLimit(32 * 1024)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORGANIZATION)
     app.setStyle("Fusion")
