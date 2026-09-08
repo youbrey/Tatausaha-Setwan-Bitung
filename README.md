@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, Dokumentasi Foto, serta Edit PDF dalam satu shell modern
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.13.0 — Edit PDF offline dan penghematan resource**.
+Versi source saat ini: **0.14.0 — OCR TPP, stabilisasi Edit PDF, dan seleksi media fleksibel**.
 
 ## Menu aplikasi
 
@@ -28,7 +28,7 @@ Menu **Dokumentasi Foto** berada tepat setelah **Rekapitulasi TPP**. Seluruh
 workspace tampil pada halaman utama di samping sidebar, bukan pada jendela atau
 browser terpisah.
 
-## Edit PDF dan optimasi versi 0.13.0
+## Edit PDF dan optimasi versi 0.14.0
 
 Menu **Edit PDF** berada setelah Dokumentasi Foto. Tersedia merge/split,
 pengurutan/duplikasi/penghapusan/rotasi halaman, sisip halaman kosong, tambah
@@ -36,11 +36,18 @@ atau ganti blok teks, sisip gambar, proteksi AES-256, serta konversi
 PDF ↔ Word, PDF ↔ Excel, dan gambar ↔ PDF. Sumber tidak ditimpa; perubahan
 disimpan sebagai salinan. Lihat [panduan dan batas fitur](docs/EDIT_PDF.md).
 
-**Batas kemampuan:** editor teks belum setara seluruh Adobe Acrobat; OCR,
-reflow paragraf kompleks, dan pemeliharaan semua font khusus belum tersedia.
+**Batas kemampuan:** editor teks belum setara seluruh Adobe Acrobat; reflow
+paragraf kompleks dan pemeliharaan semua font khusus belum tersedia.
 PDF → Word editable mengekstrak teks, PDF → Excel mengekstrak tabel.
 Word/Excel → PDF memerlukan Microsoft Office atau LibreOffice lokal.
 Unprotect memerlukan password pemilik yang benar.
+
+Rekap TPP dapat membaca PDF teks maupun PDF hasil scan memakai OCR lokal
+PyMuPDF/Tesseract. Agar OCR scan tersedia pada executable, instal Tesseract OCR
+dengan data bahasa Inggris (`eng.traineddata`) sebelum menjalankan
+`build_windows.bat`. Script build akan menemukan data pada instalasi standar
+Windows dan menyertakannya ke folder hasil build. OCR tetap bekerja 100% lokal
+tanpa mengunggah dokumen.
 
 Perubahan untuk mengurangi beban:
 
@@ -69,11 +76,11 @@ Windows; penghematan aktual bergantung pada dokumen, foto, dan perangkat.
 - Studio auto-kolase dengan preview foto nyata sebelum diterapkan.
 - Mini-preview visual untuk setiap gaya kisi, bukan daftar nama berbentuk teks.
 - Pengaturan lebar/tinggi seluruh kumpulan foto dan jarak antar-foto dalam mm.
-- Kolase otomatis dari foto yang ditandai di panel Media menjadi beberapa halaman.
+- Kolase otomatis dari foto yang dipilih di panel Media menjadi beberapa halaman.
 - Impor satu atau banyak foto, impor folder, dan drag-and-drop dari Explorer.
 - Media tray lokal dengan thumbnail.
-- Checkbox pada setiap media; auto-kolase hanya memproses foto yang ditandai,
-  sedangkan foto lain tetap tersimpan di Media dan tidak masuk ke kolase.
+- Seleksi media fleksibel dengan drag kotak, Ctrl+klik, dan Ctrl+A; auto-kolase
+  hanya memproses foto yang sedang dipilih, sedangkan foto lain tetap tersimpan.
 - Resize setiap frame melalui delapan pegangan sisi/sudut atau ukuran presisi
   lebar dan tinggi dalam mm, dengan opsi mempertahankan rasio.
 - Seleksi dua atau lebih foto otomatis berubah menjadi satu bingkai kolase;

@@ -476,7 +476,22 @@ class TravelPage(QWidget):
             field = QLineEdit()
             field.setMinimumWidth(0)
             field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            field.setPlaceholderText(f"Masukkan nomor {label.lower()}…")
+            is_optional_setwan = key in {
+                "surat_tugas_asn",
+                "pemberitahuan_asn",
+                "spd_asn",
+                "spd_pelaksana",
+                "spd_pendamping",
+            }
+            field.setPlaceholderText(
+                "Opsional: kosongkan atau isi '-'"
+                if is_optional_setwan
+                else f"Masukkan nomor {label.lower()}…"
+            )
+            if is_optional_setwan:
+                field.setToolTip(
+                    "Nomor Setwan/ASN boleh dikosongkan atau diisi karakter '-'."
+                )
             layout.addWidget(QLabel(label), row * 2 + 1, column)
             layout.addWidget(field, row * 2 + 2, column)
             self.number_fields[key] = field

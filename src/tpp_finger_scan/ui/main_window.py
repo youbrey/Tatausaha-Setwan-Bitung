@@ -224,7 +224,9 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Belum ada dokumen", "Pilih PDF finger scan terlebih dahulu.")
             return
         self.import_button.setEnabled(False)
-        self.status_label.setText("Membaca struktur PDF dan menghitung potongan…")
+        self.status_label.setText(
+            "Membaca struktur PDF/OCR lokal dan menghitung potongan…"
+        )
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QApplication.processEvents()
         try:

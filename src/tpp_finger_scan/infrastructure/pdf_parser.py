@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,11 +23,15 @@ from tpp_finger_scan.domain.models import (
 
 
 PERIOD_RE = re.compile(
-    r"Dari\s+(\d{2})[-/](\d{2})[-/](\d{4})\s+s/?d\s+"
-    r"(\d{2})[-/](\d{2})[-/](\d{4})",
+    r"Dar[iIl1]\s*:?\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})"
+    r"\s+s\s*[/\\|Il1]?\s*d\s*:?\s*"
+    r"(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})",
     re.IGNORECASE,
 )
-DATE_LABEL_RE = re.compile(r"^\d{2}/\d{2}$")
+FULL_DATE_RE = re.compile(
+    r"(?<!\d)(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})(?!\d)"
+)
+DATE_LABEL_RE = re.compile(r"^(\d{1,2})\s*[-/.]\s*(\d{1,2})$")
 IDENTITY_RE = re.compile(r"^(.*?)\(\s*([\d\s]+)\s*\)\s*$")
 COMPLETE_RE = re.compile(r"^(\d{2}:\d{2})-(\d{2}:\d{2})$")
 MISSING_OUT_RE = re.compile(r"^(\d{2}:\d{2})-$")
@@ -42,12 +48,19 @@ class _IdentityRow:
     top: float
 
 
-class FingerScanPdfParser:
-    """Parser deterministik untuk PDF tabular hasil finger scan.
+@dataclass(frozen=True, slots=True)
+class _PageData:
+    text: str
+    words: list[dict[str, Any]]
+    from_ocr: bool = False
 
-    Parser membaca posisi teks (bukan OCR) sehingga cepat dan tidak mengirim
-    dokumen ke layanan internet. PDF hasil scan gambar akan ditolak dengan
-    pesan yang jelas dan dapat ditambahkan ke antrean OCR pada tahap berikutnya.
+
+class FingerScanPdfParser:
+    """Parser posisi untuk PDF teks dan PDF scan dengan OCR lokal.
+
+    Lapisan teks asli selalu dipakai lebih dahulu. OCR PyMuPDF/Tesseract hanya
+    dijalankan pada halaman scan atau halaman yang kolom tanggalnya tidak dapat
+    dibaca. Dokumen tidak pernah dikirim ke layanan internet.
     """
 
     def parse(self, source: str | Path) -> ImportResult:
@@ -59,83 +72,119 @@ class FingerScanPdfParser:
         if source_path.stat().st_size == 0:
             raise PdfParseError("File PDF kosong.")
 
-        with pdfplumber.open(source_path) as pdf:
-            if not pdf.pages:
-                raise PdfParseError("PDF tidak memiliki halaman.")
-            first_text = pdf.pages[0].extract_text() or ""
-            period_start, period_end = self._extract_period(first_text)
-            expected_dates = self._date_range(period_start, period_end)
-            expected_labels = [value.strftime("%d/%m") for value in expected_dates]
+        ocr_document = None
 
-            employees: list[Employee] = []
-            entries: list[AttendanceEntry] = []
-            issues: list[Issue] = []
-            seen_ids: set[str] = set()
+        def ocr_page(index: int) -> _PageData:
+            nonlocal ocr_document
+            if ocr_document is None:
+                try:
+                    import fitz
+                    ocr_document = fitz.open(source_path)
+                except Exception as exc:
+                    raise PdfParseError(f"PDF tidak dapat dibuka oleh mesin OCR lokal: {exc}") from exc
+            return self._ocr_page_data(ocr_document[index])
 
-            for page_number, page in enumerate(pdf.pages, start=1):
-                words = page.extract_words(
-                    x_tolerance=1,
-                    y_tolerance=1,
-                    keep_blank_chars=False,
-                )
-                if not words:
-                    raise PdfParseError(
-                        f"Halaman {page_number} tidak berisi teks yang dapat dibaca. "
-                        "Dokumen kemungkinan berupa hasil scan gambar dan memerlukan OCR."
+        try:
+            with pdfplumber.open(source_path) as pdf:
+                if not pdf.pages:
+                    raise PdfParseError("PDF tidak memiliki halaman.")
+                first_page = self._native_page_data(pdf.pages[0])
+                try:
+                    period_start, period_end = self._extract_period(first_page.text)
+                except PdfParseError:
+                    first_page = ocr_page(0)
+                    period_start, period_end = self._extract_period(first_page.text)
+                expected_dates = self._date_range(period_start, period_end)
+                expected_labels = [value.strftime("%d/%m") for value in expected_dates]
+
+                employees: list[Employee] = []
+                entries: list[AttendanceEntry] = []
+                issues: list[Issue] = []
+                seen_ids: set[str] = set()
+
+                for page_number, page in enumerate(pdf.pages, start=1):
+                    page_data = (
+                        first_page
+                        if page_number == 1
+                        else self._native_page_data(page)
                     )
-                date_words = [word for word in words if DATE_LABEL_RE.fullmatch(word["text"])]
-                date_words.sort(key=lambda word: float(word["x0"]))
-                labels = [word["text"] for word in date_words]
-                if labels != expected_labels:
-                    raise PdfParseError(
-                        f"Kolom tanggal halaman {page_number} tidak cocok dengan periode dokumen. "
-                        f"Ditemukan {len(labels)} kolom, diharapkan {len(expected_labels)}."
-                    )
+                    date_words = self._date_words(page_data.words)
+                    labels = [word["text"] for word in date_words]
+                    if labels != expected_labels and not page_data.from_ocr:
+                        ocr_candidate = ocr_page(page_number - 1)
+                        candidate_dates = self._date_words(ocr_candidate.words)
+                        candidate_labels = [word["text"] for word in candidate_dates]
+                        if (
+                            candidate_labels == expected_labels
+                            or not page_data.words
+                            or len(candidate_dates) > len(date_words)
+                        ):
+                            page_data = ocr_candidate
+                            date_words = candidate_dates
+                            labels = candidate_labels
+                    words = page_data.words
+                    if not words:
+                        raise PdfParseError(
+                            f"Halaman {page_number} tidak berisi teks yang dapat dibaca, "
+                            "termasuk setelah OCR lokal."
+                        )
+                    date_words.sort(key=lambda word: float(word["x0"]))
+                    if labels != expected_labels:
+                        source_kind = "OCR" if page_data.from_ocr else "lapisan teks PDF"
+                        raise PdfParseError(
+                            f"Kolom tanggal halaman {page_number} tidak cocok dengan periode dokumen "
+                            f"setelah membaca {source_kind}. Ditemukan {len(labels)} kolom, "
+                            f"diharapkan {len(expected_labels)}. Pastikan scan lurus dan tajam."
+                        )
 
-                date_centers = [
-                    (float(word["x0"]) + float(word["x1"])) / 2 for word in date_words
-                ]
-                spacing = self._median_spacing(date_centers)
-                left_boundary = date_centers[0] - (spacing / 2)
-                header_bottom = max(float(word["bottom"]) for word in date_words)
-                identity_rows = self._extract_identities(words, left_boundary, header_bottom)
-                if not identity_rows:
-                    raise PdfParseError(
-                        f"Tidak menemukan nama dan ID pegawai pada halaman {page_number}."
-                    )
-
-                for index, identity in enumerate(identity_rows):
-                    employee = identity.employee
-                    if employee.finger_id in seen_ids:
-                        issues.append(Issue(
-                            "DUPLICATE_FINGER_ID",
-                            f"ID finger {employee.finger_id} ({employee.name}) muncul lebih dari sekali.",
-                        ))
-                    else:
-                        employees.append(employee)
-                        seen_ids.add(employee.finger_id)
-
-                    next_top = (
-                        identity_rows[index + 1].top
-                        if index + 1 < len(identity_rows)
-                        else float(page.height) + 1
-                    )
-                    cell_words = [
-                        word
-                        for word in words
-                        if float(word["x1"]) > left_boundary
-                        and float(word["top"]) >= identity.top - 1
-                        and float(word["top"]) < next_top - 1
-                        and not DATE_LABEL_RE.fullmatch(word["text"])
+                    date_centers = [
+                        (float(word["x0"]) + float(word["x1"])) / 2 for word in date_words
                     ]
-                    cells = self._assign_cells(cell_words, date_centers, spacing)
-                    for work_date, raw_cell in zip(expected_dates, cells, strict=True):
-                        entries.append(self._to_entry(
-                            employee=employee,
-                            work_date=work_date,
-                            raw_cell=raw_cell,
-                            page_number=page_number,
-                        ))
+                    spacing = self._median_spacing(date_centers)
+                    left_boundary = date_centers[0] - (spacing / 2)
+                    header_bottom = max(float(word["bottom"]) for word in date_words)
+                    identity_rows = self._extract_identities(words, left_boundary, header_bottom)
+                    if not identity_rows:
+                        raise PdfParseError(
+                            f"Tidak menemukan nama dan ID pegawai pada halaman {page_number}. "
+                            "Pastikan scan tidak terpotong dan tulisan cukup tajam."
+                        )
+
+                    for index, identity in enumerate(identity_rows):
+                        employee = identity.employee
+                        if employee.finger_id in seen_ids:
+                            issues.append(Issue(
+                                "DUPLICATE_FINGER_ID",
+                                f"ID finger {employee.finger_id} ({employee.name}) muncul lebih dari sekali.",
+                            ))
+                        else:
+                            employees.append(employee)
+                            seen_ids.add(employee.finger_id)
+
+                        next_top = (
+                            identity_rows[index + 1].top
+                            if index + 1 < len(identity_rows)
+                            else float(page.height) + 1
+                        )
+                        cell_words = [
+                            word
+                            for word in words
+                            if float(word["x1"]) > left_boundary
+                            and float(word["top"]) >= identity.top - 1
+                            and float(word["top"]) < next_top - 1
+                            and self._normalize_date_label(str(word["text"])) is None
+                        ]
+                        cells = self._assign_cells(cell_words, date_centers, spacing)
+                        for work_date, raw_cell in zip(expected_dates, cells, strict=True):
+                            entries.append(self._to_entry(
+                                employee=employee,
+                                work_date=work_date,
+                                raw_cell=raw_cell,
+                                page_number=page_number,
+                            ))
+        finally:
+            if ocr_document is not None:
+                ocr_document.close()
 
         return ImportResult(
             source_path=source_path,
@@ -151,11 +200,17 @@ class FingerScanPdfParser:
     def _extract_period(text: str) -> tuple[date, date]:
         flattened = " ".join(text.split())
         match = PERIOD_RE.search(flattened)
-        if not match:
+        groups: tuple[str, ...] | None = match.groups() if match else None
+        if groups is None and re.search(r"\bDar[iIl1]\b", flattened, re.IGNORECASE):
+            dates = FULL_DATE_RE.findall(flattened)
+            if len(dates) >= 2:
+                groups = (*dates[0], *dates[1])
+        if groups is None:
             raise PdfParseError(
-                "Periode 'Dari ... s/d ...' tidak ditemukan pada halaman pertama."
+                "Periode 'Dari ... s/d ...' tidak ditemukan pada halaman pertama, "
+                "termasuk setelah pembacaan OCR jika dokumen berupa hasil scan."
             )
-        day1, month1, year1, day2, month2, year2 = map(int, match.groups())
+        day1, month1, year1, day2, month2, year2 = map(int, groups)
         try:
             start = date(year1, month1, day1)
             end = date(year2, month2, day2)
@@ -166,6 +221,102 @@ class FingerScanPdfParser:
         if (end - start).days > 62:
             raise PdfParseError("Periode lebih dari 63 hari tidak didukung untuk satu impor.")
         return start, end
+
+    @staticmethod
+    def _native_page_data(page) -> _PageData:
+        words = page.extract_words(
+            x_tolerance=1,
+            y_tolerance=1,
+            keep_blank_chars=False,
+        )
+        return _PageData(page.extract_text() or "", list(words or []), False)
+
+    @staticmethod
+    def _tessdata_path() -> str:
+        candidates: list[str] = []
+        try:
+            packaged = files("tpp_finger_scan.resources").joinpath("tessdata")
+            candidates.append(str(packaged))
+        except (ModuleNotFoundError, TypeError):
+            pass
+        candidates.extend((
+            str(Path.cwd()),
+            str(Path(__file__).resolve().parents[3]),
+        ))
+        if os.environ.get("TESSDATA_PREFIX"):
+            candidates.append(os.environ["TESSDATA_PREFIX"])
+        try:
+            import fitz
+            candidates.append(str(fitz.get_tessdata()))
+        except Exception:
+            pass
+        for root in (
+            os.environ.get("PROGRAMFILES", ""),
+            os.environ.get("PROGRAMFILES(X86)", ""),
+        ):
+            if root:
+                candidates.append(str(Path(root) / "Tesseract-OCR" / "tessdata"))
+        for candidate in dict.fromkeys(candidates):
+            if candidate and (Path(candidate) / "eng.traineddata").is_file():
+                return candidate
+        raise PdfParseError(
+            "PDF ini berupa hasil scan dan memerlukan data OCR offline 'eng.traineddata'. "
+            "Instal Tesseract OCR lokal atau letakkan eng.traineddata pada folder "
+            "tpp_finger_scan/resources/tessdata, lalu buka kembali aplikasi."
+        )
+
+    def _ocr_page_data(self, page) -> _PageData:
+        try:
+            text_page = page.get_textpage_ocr(
+                language="eng",
+                dpi=300,
+                full=True,
+                tessdata=self._tessdata_path(),
+            )
+            raw_words = page.get_text("words", textpage=text_page, sort=True)
+            text = page.get_text("text", textpage=text_page, sort=True)
+        except PdfParseError:
+            raise
+        except Exception as exc:
+            raise PdfParseError(
+                f"OCR lokal tidak dapat membaca halaman {page.number + 1}: {exc}"
+            ) from exc
+        words = [
+            {
+                "x0": float(word[0]),
+                "top": float(word[1]),
+                "x1": float(word[2]),
+                "bottom": float(word[3]),
+                "text": str(word[4]),
+            }
+            for word in raw_words
+            if len(word) >= 5 and str(word[4]).strip()
+        ]
+        return _PageData(text or "", words, True)
+
+    @staticmethod
+    def _normalize_date_label(value: str) -> str | None:
+        compact = value.strip().strip("|[](){}")
+        if not any(character.isdigit() for character in compact):
+            return None
+        compact = compact.translate(str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1"}))
+        match = DATE_LABEL_RE.fullmatch(compact)
+        if not match:
+            return None
+        day, month = map(int, match.groups())
+        if not 1 <= day <= 31 or not 1 <= month <= 12:
+            return None
+        return f"{day:02d}/{month:02d}"
+
+    @classmethod
+    def _date_words(cls, words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for word in words:
+            normalized = cls._normalize_date_label(str(word.get("text", "")))
+            if normalized is not None:
+                result.append({**word, "text": normalized})
+        result.sort(key=lambda word: float(word["x0"]))
+        return result
 
     @staticmethod
     def _date_range(start: date, end: date) -> list[date]:
@@ -264,7 +415,9 @@ class FingerScanPdfParser:
         raw_cell: str,
         page_number: int,
     ) -> AttendanceEntry:
-        raw = raw_cell.strip()
+        raw = raw_cell.strip().upper()
+        raw = raw.translate(str.maketrans({"‒": "-", "–": "-", "—": "-", "―": "-"}))
+        raw = re.sub(r"(?<=\d)[.;](?=\d{2})", ":", raw)
         if raw in {"", "-"}:
             return AttendanceEntry(
                 employee, work_date, raw, None, None,

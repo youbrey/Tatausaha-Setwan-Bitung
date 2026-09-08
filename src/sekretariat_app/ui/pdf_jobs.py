@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 
 class PDFJobs(QObject):
@@ -17,14 +17,13 @@ class PDFJobs(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.process = QProcess(self)
-        self.process.setStandardOutputFile(os.devnull)
-        self.process.setStandardErrorFile(os.devnull)
         self.process.finished.connect(self._finish)
         self.process.errorOccurred.connect(self._error)
         self.timer = QTimer(self)
         self.timer.setInterval(300)
         self.timer.timeout.connect(self._poll)
         self.directory = None
+        self.error_log: Path | None = None
         self.busy = False
 
     def start(self, request: dict) -> None:
@@ -35,6 +34,16 @@ class PDFJobs(QObject):
         with path.open("w", encoding="utf-8") as stream:
             os.chmod(path, 0o600)
             json.dump(request, stream, ensure_ascii=False)
+        self.error_log = Path(self.directory.name) / "worker-error.log"
+        self.process.setStandardOutputFile(os.devnull)
+        self.process.setStandardErrorFile(str(self.error_log))
+        environment = QProcessEnvironment.systemEnvironment()
+        if getattr(sys, "frozen", False):
+            # PyInstaller harus memperlakukan executable kedua sebagai proses
+            # baru. Tanpa ini bootloader dapat berhenti sebelum dispatcher
+            # ``--pdf-worker`` dijalankan pada build Windows.
+            environment.insert("PYINSTALLER_RESET_ENVIRONMENT", "1")
+        self.process.setProcessEnvironment(environment)
         self.busy = True
         self.busy_changed.emit(True)
         arguments = (["--pdf-worker"] if getattr(sys, "frozen", False)
@@ -68,9 +77,25 @@ class PDFJobs(QObject):
         try:
             data = json.loads((Path(self.directory.name) / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            data = {"ok": False, "error": "Proses PDF berhenti. Periksa instalasi PyMuPDF dan ruang penyimpanan."}
+            detail = ""
+            try:
+                detail = (self.error_log.read_text(encoding="utf-8", errors="replace")
+                          if self.error_log else "").strip()
+            except OSError:
+                pass
+            if detail:
+                detail = detail[-2000:]
+            else:
+                detail = self.process.errorString().strip()
+            if not detail or detail == "Unknown error":
+                detail = f"Kode keluar proses: {self.process.exitCode()}"
+            message = "Proses PDF berhenti sebelum menghasilkan hasil."
+            if detail:
+                message += f"\n\nRincian teknis:\n{detail}"
+            data = {"ok": False, "error": message}
         self.directory.cleanup()
         self.directory = None
+        self.error_log = None
         self.busy = False
         self.busy_changed.emit(False)
         self.finished.emit(data)

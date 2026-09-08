@@ -98,32 +98,30 @@ class TravelFormData:
             raise ValueError("Pilih minimal satu anggota DPRD atau pendamping ASN.")
         if self.mode == "setwan" and not (self.executors or self.companions):
             raise ValueError("Pilih minimal satu pelaksana atau pendamping ASN.")
+        self._validate_task_bases()
+
+    def _validate_task_bases(self) -> None:
+        if self.mode == "dprd" and self.dprd and not has_form_value(self.basis_dprd):
+            raise ValueError("Dasar Surat Tugas DPRD wajib diisi.")
+        needs_setwan_basis = (self.mode == "dprd" and bool(self.asn)) or self.mode == "setwan"
+        if needs_setwan_basis and not has_form_value(self.basis_asn):
+            raise ValueError("Dasar Surat Tugas Setwan/ASN wajib diisi.")
 
     def required_document_numbers(self) -> dict[str, str]:
-        """Nomor yang benar-benar dipakai oleh cabang dokumen terpilih."""
+        """Nomor yang wajib pada cabang DPRD.
+
+        Nomor Surat Tugas Setwan, Pemberitahuan Setwan, dan SPD Setwan/ASN
+        sengaja tidak dimasukkan. Ketiga nomor itu boleh kosong atau memakai
+        placeholder ``-`` tanpa menghalangi pembuatan dokumen.
+        """
         required: dict[str, str] = {}
         if self.mode == "dprd":
             if self.dprd:
                 required.update({
                     "surat_tugas_dprd": "Surat Tugas DPRD",
                     "spd_dprd": "SPD DPRD",
+                    "pemberitahuan_dprd": "Surat Pemberitahuan DPRD",
                 })
-            if self.asn:
-                required.update({
-                    "surat_tugas_asn": "Surat Tugas Pendamping ASN",
-                    "spd_asn": "SPD Pendamping ASN",
-                })
-            if self.dprd or self.asn:
-                required["pemberitahuan_dprd"] = "Surat Pemberitahuan DPRD"
-        else:
-            required.update({
-                "surat_tugas_asn": "Surat Tugas Setwan",
-                "pemberitahuan_asn": "Surat Pemberitahuan Setwan",
-            })
-            if self.executors:
-                required["spd_pelaksana"] = "SPD Pelaksana ASN"
-            if self.companions:
-                required["spd_pendamping"] = "SPD Pendamping ASN"
         return required
 
     def validate(self) -> None:
@@ -139,13 +137,9 @@ class TravelFormData:
         if not has_form_value(self.notice_subject):
             raise ValueError("Isi Surat Pemberitahuan wajib diisi.")
         if self.mode == "dprd" and self.dprd:
-            if not has_form_value(self.basis_dprd):
-                raise ValueError("Dasar Surat Tugas DPRD wajib diisi.")
             if not has_form_value(self.signer_dprd):
                 raise ValueError("Penandatangan DPRD wajib dipilih.")
         if (self.mode == "dprd" and self.asn) or self.mode == "setwan":
-            if not has_form_value(self.basis_asn):
-                raise ValueError("Dasar Surat Tugas ASN wajib diisi.")
             if not has_form_value(self.signer_asn):
                 raise ValueError("Penandatangan ASN/SPD wajib dipilih.")
 

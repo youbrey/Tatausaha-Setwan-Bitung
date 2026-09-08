@@ -516,7 +516,7 @@ class AutoCollageDialog(QDialog):
         layout = QVBoxLayout(self)
         width_mm, height_mm = project.page_size_mm
         heading = QLabel(
-            f"{len(self.media_paths)} foto ditandai  ·  {project.paper_size} "
+            f"{len(self.media_paths)} foto dipilih  ·  {project.paper_size} "
             f"{width_mm:g} × {height_mm:g} mm  ·  {project.orientation.title()}"
         )
         heading.setObjectName("SectionTitle")
@@ -716,6 +716,10 @@ class DocumentationPhotoPage(QWidget):
         self._thumbnail_timer.setSingleShot(True)
         self._thumbnail_timer.setInterval(40)
         self._thumbnail_timer.timeout.connect(self._load_visible_thumbnails)
+        self._media_selection_timer = QTimer(self)
+        self._media_selection_timer.setSingleShot(True)
+        self._media_selection_timer.setInterval(250)
+        self._media_selection_timer.timeout.connect(self._commit_media_selection)
         self._letterhead_timer = QTimer(self)
         self._letterhead_timer.setSingleShot(True)
         self._letterhead_timer.setInterval(350)
@@ -1088,25 +1092,35 @@ class DocumentationPhotoPage(QWidget):
         row.addWidget(add)
         row.addWidget(folder)
         layout.addLayout(row)
+        selection_hint = QLabel(
+            "Pilih foto untuk auto-kolase dengan drag kotak seleksi. "
+            "Gunakan Ctrl+klik untuk menambah/melepas pilihan dan Ctrl+A untuk memilih semua."
+        )
+        selection_hint.setObjectName("MutedText")
+        selection_hint.setWordWrap(True)
+        layout.addWidget(selection_hint)
         self.media_list = QListWidget()
         self.media_list.setViewMode(QListWidget.ViewMode.IconMode)
         self.media_list.setIconSize(QSize(72, 72))
         self.media_list.setGridSize(QSize(105, 104))
         self.media_list.setUniformItemSizes(True)
         self.media_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.media_list.setMovement(QListWidget.Movement.Static)
+        self.media_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self.media_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.media_list.setSelectionRectVisible(True)
         self.media_list.itemDoubleClicked.connect(self._assign_media_item)
-        self.media_list.itemChanged.connect(self._media_check_changed)
+        self.media_list.itemSelectionChanged.connect(self._media_selection_changed)
         self.media_list.viewport().installEventFilter(self)
         self.media_list.verticalScrollBar().valueChanged.connect(lambda _: self._thumbnail_timer.start())
         layout.addWidget(self.media_list, 1)
-        self.media_selection_summary = QLabel("0 dari 0 foto ditandai untuk auto-kolase")
+        self.media_selection_summary = QLabel("0 dari 0 foto dipilih untuk auto-kolase")
         self.media_selection_summary.setObjectName("MutedText")
         self.media_selection_summary.setWordWrap(True)
         layout.addWidget(self.media_selection_summary)
         mark_row = QHBoxLayout()
-        mark_all = QPushButton("Tandai Semua")
-        clear_marks = QPushButton("Lepas Semua Tanda")
+        mark_all = QPushButton("Pilih Semua")
+        clear_marks = QPushButton("Kosongkan Pilihan")
         mark_all.clicked.connect(lambda: self._set_all_media_marked(True))
         clear_marks.clicked.connect(lambda: self._set_all_media_marked(False))
         mark_row.addWidget(mark_all)
@@ -1600,8 +1614,8 @@ class DocumentationPhotoPage(QWidget):
         if not marked_media:
             QMessageBox.information(
                 self,
-                "Belum ada foto ditandai",
-                "Centang minimal satu foto pada panel Media sebelum membuat kolase otomatis.",
+                "Belum ada foto dipilih",
+                "Pilih foto pada panel Media dengan drag atau Ctrl+klik sebelum membuat kolase otomatis.",
             )
             return
         dialog = AutoCollageDialog(self.project, marked_media, self)
@@ -1655,7 +1669,7 @@ class DocumentationPhotoPage(QWidget):
         self._schedule_autosave()
         self.status_text(
             f"Kolase otomatis selesai: {len(generated)} halaman dari "
-            f"{len(marked_media)} foto yang ditandai."
+            f"{len(marked_media)} foto yang dipilih."
         )
 
     def import_photos(self) -> None:
@@ -1705,13 +1719,8 @@ class DocumentationPhotoPage(QWidget):
             item = QListWidgetItem(source.name)
             item.setData(Qt.ItemDataRole.UserRole, path)
             item.setToolTip(path)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if path in marked_paths
-                else Qt.CheckState.Unchecked
-            )
             self.media_list.addItem(item)
+            item.setSelected(path in marked_paths)
         del blocker
         self._update_media_selection_summary()
         self._thumbnail_timer.start()
@@ -1785,45 +1794,52 @@ class DocumentationPhotoPage(QWidget):
             self._update_letterhead()
         self._autosave_timer.stop()
         self._thumbnail_timer.stop()
+        if self._media_selection_timer.isActive():
+            self._media_selection_timer.stop()
+            self._commit_media_selection()
         self._write_autosave()
 
     def _marked_media_paths(self) -> list[str]:
         marked = set(self.project.marked_media)
+        if hasattr(self, "media_list"):
+            marked = {
+                str(item.data(Qt.ItemDataRole.UserRole))
+                for item in self.media_list.selectedItems()
+            }
         return [path for path in self.project.media if path in marked]
 
-    def _media_check_changed(self, item: QListWidgetItem) -> None:
-        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
-        if not path:
-            return
-        marked = set(self.project.marked_media)
-        if item.checkState() == Qt.CheckState.Checked:
-            marked.add(path)
-        else:
-            marked.discard(path)
+    def _media_selection_changed(self) -> None:
+        marked = {
+            str(item.data(Qt.ItemDataRole.UserRole))
+            for item in self.media_list.selectedItems()
+        }
         self.project.marked_media = [
             media_path for media_path in self.project.media if media_path in marked
         ]
         self._update_media_selection_summary()
+        self._media_selection_timer.start()
+
+    def _commit_media_selection(self) -> None:
         self._push_history()
         self._schedule_autosave()
 
     def _set_all_media_marked(self, marked: bool) -> None:
         self.project.marked_media = list(self.project.media) if marked else []
         blocker = QSignalBlocker(self.media_list)
-        state = Qt.CheckState.Checked if marked else Qt.CheckState.Unchecked
-        for index in range(self.media_list.count()):
-            self.media_list.item(index).setCheckState(state)
+        if marked:
+            self.media_list.selectAll()
+        else:
+            self.media_list.clearSelection()
         del blocker
         self._update_media_selection_summary()
-        self._push_history()
-        self._schedule_autosave()
+        self._media_selection_timer.start()
 
     def _update_media_selection_summary(self) -> None:
         if not hasattr(self, "media_selection_summary"):
             return
         self.media_selection_summary.setText(
             f"{len(self._marked_media_paths())} dari {len(self.project.media)} foto "
-            "ditandai untuk auto-kolase"
+            "dipilih untuk auto-kolase"
         )
 
     def _assign_media_item(self, item: QListWidgetItem) -> None:

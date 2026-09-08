@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sekretariat-dprd-bitung"
-version = "0.13.0"
+version = "0.14.0"
 description = "Aplikasi desktop terpadu Sekretariat DPRD Kota Bitung"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,7 +30,11 @@ tpp-finger-cli = "tpp_finger_scan.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-tpp_finger_scan = ["resources/*.qss", "resources/*.xlsx"]
+tpp_finger_scan = [
+  "resources/*.qss",
+  "resources/*.xlsx",
+  "resources/tessdata/*.traineddata",
+]
 sekretariat_app = [
   "resources/*.qss",
   "resources/*.ico",

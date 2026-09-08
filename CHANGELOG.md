@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0 — 2026-09-08
+
+- Menjadikan nomor Surat Tugas Setwan, Pemberitahuan Setwan, dan SPD
+  Setwan/ASN opsional; nilai kosong maupun `-` tidak dianggap nomor duplikat.
+- Mempertahankan validasi wajib untuk dasar Surat Tugas DPRD dan dasar Surat
+  Tugas Setwan/ASN sesuai kelompok pelaksana yang dipilih.
+- Menambahkan jalur OCR lokal PyMuPDF/Tesseract untuk membaca periode, posisi
+  kolom tanggal, identitas pegawai, dan sel kehadiran pada PDF hasil scan.
+- Memperbaiki proses worker Edit PDF pada executable PyInstaller Windows dan
+  menampilkan rincian kegagalan proses jika hasil worker tidak terbentuk.
+- Menjaga isi teks tetap utuh selama resize melalui handle sisi maupun sudut.
+- Mengganti checkbox Media dengan seleksi visual memakai drag kotak, Ctrl+klik,
+  serta Ctrl+A; hanya foto terpilih yang dipakai oleh auto-kolase.
+
 ## 0.12.0 — 2026-09-05
 
 - Menambahkan checkbox pada setiap foto di Media serta perintah Tandai Semua

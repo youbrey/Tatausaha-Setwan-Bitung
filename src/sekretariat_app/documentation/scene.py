@@ -736,6 +736,7 @@ class TextItem(QGraphicsTextItem):
         self._start_text_rect = QRectF()
         self._start_text_width = 0.0
         self._start_font_size = 0.0
+        self._resize_text = ""
         self._start_local_to_scene = QTransform()
         self._start_scene_to_local = QTransform()
         self.setPlainText(str(data.get("text", "Teks")))
@@ -787,13 +788,21 @@ class TextItem(QGraphicsTextItem):
                 return name
         return ""
 
-    def apply_font(self) -> None:
+    def _configured_font(self) -> QFont:
         font = QFont(str(self.data.get("font_family", "Arial")))
         font.setPixelSize(max(2, round(float(self.data.get("font_size", 14)) * 0.352778)))
         font.setBold(bool(self.data.get("bold", False)))
         font.setItalic(bool(self.data.get("italic", False)))
         font.setUnderline(bool(self.data.get("underline", False)))
         font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, float(self.data.get("letter_spacing", 0.0)) * 0.352778)
+        return font
+
+    def apply_font(self) -> None:
+        # Menyetel font atau format paragraf tidak boleh mengubah isi dokumen.
+        # Salinan ini juga melindungi teks yang baru selesai diedit sebelum
+        # pengguna langsung menarik handle ukuran.
+        current_text = self.toPlainText()
+        font = self._configured_font()
         self.setFont(font)
         self.setDefaultTextColor(QColor(str(self.data.get("color", "#0f172a"))))
         cursor = self.textCursor()
@@ -823,6 +832,16 @@ class TextItem(QGraphicsTextItem):
             shadow.setOffset(0 if effect == "glow" else 2, 0 if effect == "glow" else 2)
         else:
             self.setGraphicsEffect(None)
+        if self.toPlainText() != current_text:
+            self.setPlainText(current_text)
+            self.setFont(font)
+
+    def _apply_resize_font(self) -> None:
+        """Perbarui ukuran visual saat drag tanpa memformat ulang dokumen."""
+        self.setFont(self._configured_font())
+        self.setDefaultTextColor(QColor(str(self.data.get("color", "#0f172a"))))
+        if self.toPlainText() != self._resize_text:
+            self.setPlainText(self._resize_text)
 
     def set_locked(self, locked: bool) -> None:
         self.data["locked"] = locked
@@ -846,6 +865,8 @@ class TextItem(QGraphicsTextItem):
         handle = self._handle_at(event.pos())
         if event.button() == Qt.MouseButton.LeftButton and handle:
             self._resize_handle = handle
+            self._resize_text = self.toPlainText()
+            self.data["text"] = self._resize_text
             self._start_text_rect = self._content_rect()
             self._start_text_width = max(self.MIN_WIDTH, self.textWidth())
             self._start_font_size = max(
@@ -878,6 +899,7 @@ class TextItem(QGraphicsTextItem):
                     self._start_text_rect.top(),
                 )
             self.setTextWidth(max(self.MIN_WIDTH, width))
+            self._apply_resize_font()
             self.data["width"] = self.textWidth()
             new_rect = self._content_rect()
             new_anchor = QPointF(
@@ -916,7 +938,7 @@ class TextItem(QGraphicsTextItem):
             self.data["font_size"] = font_size
             self.data["width"] = max(self.MIN_WIDTH, self._start_text_width * scale)
             self.setTextWidth(float(self.data["width"]))
-            self.apply_font()
+            self._apply_resize_font()
             new_rect = self._content_rect()
             new_anchor = {
                 "top_left": new_rect.bottomRight(),
@@ -941,6 +963,12 @@ class TextItem(QGraphicsTextItem):
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if self._resize_handle:
             self._resize_handle = ""
+            if self.toPlainText() != self._resize_text:
+                self.setPlainText(self._resize_text)
+            self.data["text"] = self._resize_text
+            self.data["width"] = self.textWidth()
+            self.apply_font()
+            self._resize_text = ""
             self.unsetCursor()
             self.changed.emit()
             event.accept()

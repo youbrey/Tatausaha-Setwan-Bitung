@@ -259,7 +259,7 @@ class PDFEditorPage(QWidget):
         self.status.setText("Memproses dokumen…")
         try:
             self.jobs.start(request)
-        except (OSError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             self.request = self.callback = None
             self.status.setText(str(error))
             QMessageBox.warning(self, "Tidak dapat memulai proses PDF", str(error))
