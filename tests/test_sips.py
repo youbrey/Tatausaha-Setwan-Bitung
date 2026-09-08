@@ -154,7 +154,7 @@ class SIPSMigrationTests(unittest.TestCase):
             self.assertEqual(len(files), 4)
             self.assertFalse(any("daftar-hadir" in path.name for path in files))
 
-    def test_travel_validation_is_role_dependent_and_preview_allows_draft_numbers(self) -> None:
+    def test_travel_validation_allows_optional_setwan_numbers(self) -> None:
         data = TravelFormData(
             mode="setwan",
             document_numbers={},
@@ -172,8 +172,7 @@ class SIPSMigrationTests(unittest.TestCase):
             executors=[self.master.asn[0]],
         )
         data.validate_preview()
-        with self.assertRaisesRegex(ValueError, "Surat Tugas Setwan.*Pemberitahuan Setwan.*SPD Pelaksana"):
-            data.validate()
+        data.validate()
 
     def test_batch_report_keeps_other_files_when_one_generator_fails(self) -> None:
         data = TravelFormData(
@@ -365,10 +364,8 @@ class SIPSMigrationTests(unittest.TestCase):
             / "ui"
             / "shell.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('TravelPage("dprd"', shell_source)
-        self.assertIn('TravelPage("setwan"', shell_source)
-        self.assertIn('InvitationPage("paripurna"', shell_source)
-        self.assertIn('InvitationPage("biasa"', shell_source)
+        self.assertIn('TravelPage("dprd" if route == "travel_dprd" else "setwan"', shell_source)
+        self.assertIn('InvitationPage("paripurna" if route == "invitation_plenary" else "biasa"', shell_source)
         self.assertNotIn("ModuleWorkspacePage(", shell_source)
         self.assertNotIn("= RecapPage(", shell_source)
 

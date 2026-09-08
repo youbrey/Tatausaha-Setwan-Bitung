@@ -19,11 +19,14 @@ class PDFJobs(QObject):
         self.process = QProcess(self)
         self.process.finished.connect(self._finish)
         self.process.errorOccurred.connect(self._error)
+        self.process.readyReadStandardError.connect(self._read_stderr)
+        self.process.readyReadStandardOutput.connect(self._drain_stdout)
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
         self.timer = QTimer(self)
         self.timer.setInterval(300)
         self.timer.timeout.connect(self._poll)
         self.directory = None
-        self.error_log: Path | None = None
+        self._stderr = bytearray()
         self.busy = False
 
     def start(self, request: dict) -> None:
@@ -34,9 +37,12 @@ class PDFJobs(QObject):
         with path.open("w", encoding="utf-8") as stream:
             os.chmod(path, 0o600)
             json.dump(request, stream, ensure_ascii=False)
-        self.error_log = Path(self.directory.name) / "worker-error.log"
-        self.process.setStandardOutputFile(os.devnull)
-        self.process.setStandardErrorFile(str(self.error_log))
+        # Do not redirect to ``os.devnull`` here.  In a windowed PyInstaller
+        # build on Windows, Qt can interpret ``nul`` as a relative output file
+        # and abort before the worker starts with "Could not open output
+        # redirection for writing".  Draining both channels is portable and
+        # also gives us the real worker error when startup fails.
+        self._stderr.clear()
         environment = QProcessEnvironment.systemEnvironment()
         if getattr(sys, "frozen", False):
             # PyInstaller harus memperlakukan executable kedua sebagai proses
@@ -50,6 +56,14 @@ class PDFJobs(QObject):
                      else ["-m", "sekretariat_app.pdf_tools.worker"])
         self.process.start(sys.executable, arguments + [str(path)])
         self.timer.start()
+
+    def _read_stderr(self) -> None:
+        self._stderr.extend(bytes(self.process.readAllStandardError()))
+        if len(self._stderr) > 16_384:
+            del self._stderr[:-16_384]
+
+    def _drain_stdout(self) -> None:
+        self.process.readAllStandardOutput()
 
     def cancel(self) -> None:
         if self.directory and self.busy:
@@ -74,15 +88,13 @@ class PDFJobs(QObject):
         if not self.busy:
             return
         self.timer.stop()
+        self._read_stderr()
+        self._drain_stdout()
         try:
             data = json.loads((Path(self.directory.name) / "result.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             detail = ""
-            try:
-                detail = (self.error_log.read_text(encoding="utf-8", errors="replace")
-                          if self.error_log else "").strip()
-            except OSError:
-                pass
+            detail = self._stderr.decode("utf-8", errors="replace").strip()
             if detail:
                 detail = detail[-2000:]
             else:
@@ -95,7 +107,7 @@ class PDFJobs(QObject):
             data = {"ok": False, "error": message}
         self.directory.cleanup()
         self.directory = None
-        self.error_log = None
+        self._stderr.clear()
         self.busy = False
         self.busy_changed.emit(False)
         self.finished.emit(data)

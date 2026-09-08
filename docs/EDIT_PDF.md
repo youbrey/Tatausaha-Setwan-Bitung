@@ -1,4 +1,4 @@
-# Edit PDF — versi 0.14.0
+# Edit PDF — versi 0.15.1
 
 Workspace desktop offline di sidebar setelah Dokumentasi Foto. Tidak ada
 layanan konversi internet. Instalasi dependency saat setup dilakukan sebelum
@@ -61,6 +61,8 @@ kemudian dipindahkan setelah proses berhasil.
 - `PDFJobs` memakai `QProcess`, satu pekerjaan aktif per workspace. Worker
   menerima request JSON lokal, menghapus request setelah dibaca, dan menulis
   hasil/status ke file lokal agar juga bekerja pada executable `--windowed`.
+  Output proses dibaca langsung melalui kanal Qt—tidak dialihkan ke perangkat
+  `nul`—agar worker dapat dimulai dengan konsisten pada build Windows.
 - Worker mengimpor PyMuPDF dan library konversi sesuai kebutuhan. Proses keluar
   setelah pekerjaan selesai untuk melepaskan alokasi native. Di Windows,
   prioritas worker dibuat lebih rendah dari UI.
@@ -103,6 +105,6 @@ salin seluruh folder `dist\SekretariatDPRDBitung`, bukan hanya `.exe`.
 Konversi Word/Excel tetap memerlukan Office atau LibreOffice lokal pada PC
 tujuan. Tidak diperlukan Node.js, server web, atau API konversi.
 
-Versi ini ditinjau melalui pembacaan source dan diff. Test, eksekusi aplikasi,
-dan build tidak dijalankan sesuai instruksi pengguna. Perilaku runtime Qt,
-hasil konversi Office, dan tampilan PDF di Windows belum diverifikasi langsung.
+Worker dan operasi inti Edit PDF telah diuji dari source. Konversi Office tetap
+bergantung pada instalasi Microsoft Office/LibreOffice, dan tampilan akhir perlu
+diverifikasi kembali pada build Windows target.

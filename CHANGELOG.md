@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.15.1 — 2026-09-08
+
+- Memperbaiki seluruh pekerjaan Edit PDF pada build Windows dengan membuang
+  redirection `QProcess` ke perangkat `nul` yang dapat menghentikan worker
+  sebelum request dibaca; stderr kini ditampung aman untuk rincian kegagalan.
+- Menutup mode crop/resize kolase sebelum teks baru dibuat, menempatkan teks di
+  lapisan teratas, dan menjaga isi `QTextDocument` selama drag sehingga teks
+  tidak lagi menghilang saat ukurannya diubah.
+- Menyamakan resize teks dengan pola Canva: pegangan sudut menskalakan ukuran
+  huruf dan kotak secara proporsional, sedangkan pegangan sisi mengubah lebar
+  pembungkus teks tanpa mengubah ukuran huruf.
+- Menambahkan rekonstruksi garis tabel untuk PDF CamScanner/image-only. Kolom
+  tanggal disusun dari geometri tabel, lalu nama, ID, kode khusus, dan sel
+  kehadiran dibaca per-area dengan OCR offline bertahap.
+- Mengubah kode `TL`, `W`, `WFH`, `I`, dan `S` yang terbaca dari PDF menjadi
+  override otomatis, sambil mempertahankan nilai jam yang meragukan sebagai
+  data tidak valid agar tetap diperiksa operator.
+- Menambahkan regresi worker `QProcess`, matriks operasi Edit PDF, rekonstruksi
+  kolom scan, normalisasi OCR, dan override kode kehadiran.
+
 ## 0.14.0 — 2026-09-08
 
 - Menjadikan nomor Surat Tugas Setwan, Pemberitahuan Setwan, dan SPD

@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import unittest
 from datetime import date, time
+from pathlib import Path
 
-from tpp_finger_scan.domain.models import AttendanceState, Employee
+from PIL import Image, ImageDraw
+
+from tpp_finger_scan.application.services import AttendanceApplicationService
+from tpp_finger_scan.domain.models import (
+    AttendanceEntry,
+    AttendanceState,
+    Employee,
+    ImportResult,
+    SpecialCode,
+)
 from tpp_finger_scan.infrastructure.pdf_parser import FingerScanPdfParser, PdfParseError
 
 
@@ -44,7 +54,57 @@ class PdfParserTests(unittest.TestCase):
         with self.assertRaises(PdfParseError):
             FingerScanPdfParser._extract_period("dokumen tanpa periode")
 
+    def test_handwritten_tl_is_normalized_without_guessing_times(self) -> None:
+        self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("T"), "TL")
+        self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("TT"), "TL")
+        self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("07:58"), "07:58")
+        self.assertFalse(FingerScanPdfParser._is_recognized_ocr_cell("07:58"))
+
+    def test_scanned_table_grid_reconstructs_date_columns(self) -> None:
+        image = Image.new("L", (1400, 800), 255)
+        draw = ImageDraw.Draw(image)
+        date_boundaries = tuple(range(500, 1101, 120))
+        for y in (100, 140, 200, 260, 320, 380):
+            draw.rectangle((100, y, 1100, y + 2), fill=0)
+        for x in (100, *date_boundaries):
+            draw.rectangle((x, 100, x + 2, 380), fill=0)
+
+        grid = FingerScanPdfParser._detect_scan_grid(image, 5, dpi=100)
+
+        self.assertEqual(grid.name_left, 100)
+        self.assertEqual(grid.date_boundaries, date_boundaries)
+        self.assertGreaterEqual(len(grid.row_bands), 3)
+
+    def test_special_codes_from_pdf_become_automatic_overrides(self) -> None:
+        entry = AttendanceEntry(
+            self.employee,
+            date(2026, 8, 24),
+            "TL",
+            None,
+            None,
+            AttendanceState.INVALID,
+            1,
+        )
+        result = ImportResult(
+            Path("scan.pdf"),
+            "sha256",
+            entry.work_date,
+            entry.work_date,
+            [self.employee],
+            [entry],
+        )
+
+        class StubParser:
+            @staticmethod
+            def parse(_path):
+                return result
+
+        session = AttendanceApplicationService(parser=StubParser()).import_pdf("scan.pdf")
+        key = (self.employee.finger_id, entry.work_date)
+        self.assertEqual(session.overrides[key].code, SpecialCode.TL)
+        self.assertEqual(session.calculations[0].status, "TL")
+        self.assertTrue(session.finalizable)
+
 
 if __name__ == "__main__":
     unittest.main()
-
