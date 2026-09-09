@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, Dokumentasi Foto, serta Edit PDF dalam satu shell modern
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.14.0 — OCR TPP, stabilisasi Edit PDF, dan seleksi media fleksibel**.
+Versi source saat ini: **0.15.1 — perbaikan Edit PDF, resize teks ala Canva, dan OCR tabel CamScanner**.
 
 ## Menu aplikasi
 
@@ -28,7 +28,7 @@ Menu **Dokumentasi Foto** berada tepat setelah **Rekapitulasi TPP**. Seluruh
 workspace tampil pada halaman utama di samping sidebar, bukan pada jendela atau
 browser terpisah.
 
-## Edit PDF dan optimasi versi 0.14.0
+## Edit PDF dan optimasi versi 0.15.1
 
 Menu **Edit PDF** berada setelah Dokumentasi Foto. Tersedia merge/split,
 pengurutan/duplikasi/penghapusan/rotasi halaman, sisip halaman kosong, tambah
@@ -43,7 +43,9 @@ Word/Excel → PDF memerlukan Microsoft Office atau LibreOffice lokal.
 Unprotect memerlukan password pemilik yang benar.
 
 Rekap TPP dapat membaca PDF teks maupun PDF hasil scan memakai OCR lokal
-PyMuPDF/Tesseract. Agar OCR scan tersedia pada executable, instal Tesseract OCR
+PyMuPDF/Tesseract. Untuk PDF CamScanner/image-only, aplikasi merekonstruksi
+garis tabel dan kolom tanggal, lalu membaca identitas serta sel kehadiran
+per-area. Agar OCR scan tersedia pada executable, instal Tesseract OCR
 dengan data bahasa Inggris (`eng.traineddata`) sebelum menjalankan
 `build_windows.bat`. Script build akan menemukan data pada instalasi standar
 Windows dan menyertakannya ke folder hasil build. OCR tetap bekerja 100% lokal
@@ -62,9 +64,10 @@ Perubahan untuk mengurangi beban:
   surat memakai satu timer, dan history foto dibatasi jumlah serta ukurannya.
 - Logout menutup workspace dan membersihkan resource halaman yang telah dibuka.
 
-Sesuai permintaan, perubahan ini ditinjau secara statis tanpa menjalankan test,
-aplikasi, atau build. Belum ada angka benchmark atau verifikasi printer/Office
-Windows; penghematan aktual bergantung pada dokumen, foto, dan perangkat.
+Regresi otomatis mencakup worker Edit PDF, operasi halaman/edit/konversi,
+rekonstruksi tabel scan, aturan TPP, ekspor, dan migrasi SIPS. Contoh PDF
+CamScanner juga diuji langsung; verifikasi visual final pada build Windows tetap
+disarankan karena lingkungan pengujian source bukan Windows.
 
 ## Kemampuan Dokumentasi Foto
 

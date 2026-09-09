@@ -1890,7 +1890,13 @@ class DocumentationPhotoPage(QWidget):
             self._assign_photo_path(str(Path(path).resolve()))
 
     def add_text(self) -> None:
-        self.scene.add_text()
+        self._close_canvas_modes(commit_crop=True, commit_collage=True)
+        item = self.scene.add_text()
+        item.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.status_text(
+            "Teks ditambahkan. Seret pegangan sudut untuk mengubah ukuran huruf, "
+            "atau pegangan sisi untuk mengatur lebar kotak teks."
+        )
 
     def delete_selected(self) -> None:
         if self._active_crop_item is not None:

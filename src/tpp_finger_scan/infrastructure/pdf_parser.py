@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
+import shutil
+import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -55,6 +58,23 @@ class _PageData:
     from_ocr: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _PixelBand:
+    start: int
+    end: int
+    peak: int
+    score: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ScanGrid:
+    name_left: int
+    date_boundaries: tuple[int, ...]
+    header_top: _PixelBand
+    header_bottom: _PixelBand
+    row_bands: tuple[_PixelBand, ...]
+
+
 class FingerScanPdfParser:
     """Parser posisi untuk PDF teks dan PDF scan dengan OCR lokal.
 
@@ -73,6 +93,8 @@ class FingerScanPdfParser:
             raise PdfParseError("File PDF kosong.")
 
         ocr_document = None
+        ocr_pages: dict[int, _PageData] = {}
+        table_pages: dict[int, _PageData] = {}
 
         def ocr_page(index: int) -> _PageData:
             nonlocal ocr_document
@@ -82,7 +104,23 @@ class FingerScanPdfParser:
                     ocr_document = fitz.open(source_path)
                 except Exception as exc:
                     raise PdfParseError(f"PDF tidak dapat dibuka oleh mesin OCR lokal: {exc}") from exc
-            return self._ocr_page_data(ocr_document[index])
+            if index not in ocr_pages:
+                ocr_pages[index] = self._ocr_page_data(ocr_document[index])
+            return ocr_pages[index]
+
+        def table_page(index: int, labels: list[str]) -> _PageData:
+            nonlocal ocr_document
+            if ocr_document is None:
+                try:
+                    import fitz
+                    ocr_document = fitz.open(source_path)
+                except Exception as exc:
+                    raise PdfParseError(f"PDF tidak dapat dibuka oleh mesin OCR lokal: {exc}") from exc
+            if index not in table_pages:
+                table_pages[index] = self._ocr_table_page_data(
+                    ocr_document[index], labels
+                )
+            return table_pages[index]
 
         try:
             with pdfplumber.open(source_path) as pdf:
@@ -122,6 +160,19 @@ class FingerScanPdfParser:
                             page_data = ocr_candidate
                             date_words = candidate_dates
                             labels = candidate_labels
+                    if labels != expected_labels:
+                        # CamScanner and similar apps usually store one large
+                        # image. Full-page OCR often merges the narrow date
+                        # headers with table borders. Reconstruct the grid from
+                        # the pixels, then OCR every identity row and occupied
+                        # attendance cell independently.
+                        table_candidate = table_page(page_number - 1, expected_labels)
+                        table_dates = self._date_words(table_candidate.words)
+                        table_labels = [word["text"] for word in table_dates]
+                        if table_labels == expected_labels:
+                            page_data = table_candidate
+                            date_words = table_dates
+                            labels = table_labels
                     words = page_data.words
                     if not words:
                         raise PdfParseError(
@@ -293,6 +344,513 @@ class FingerScanPdfParser:
             if len(word) >= 5 and str(word[4]).strip()
         ]
         return _PageData(text or "", words, True)
+
+    @staticmethod
+    def _projection_bands(
+        image,
+        *,
+        axis: str,
+        start: int,
+        end: int,
+        cross_start: int,
+        cross_end: int,
+        minimum_ratio: float,
+        merge_gap: int = 1,
+    ) -> list[_PixelBand]:
+        """Find dark horizontal/vertical strokes using Pillow's C histogram."""
+        length = max(1, cross_end - cross_start)
+        matches: list[tuple[int, int]] = []
+        for coordinate in range(max(0, start), min(end, image.height if axis == "row" else image.width)):
+            if axis == "row":
+                strip = image.crop((cross_start, coordinate, cross_end, coordinate + 1))
+            else:
+                strip = image.crop((coordinate, cross_start, coordinate + 1, cross_end))
+            score = strip.histogram()[0]
+            if score >= length * minimum_ratio:
+                matches.append((coordinate, score))
+
+        groups: list[list[tuple[int, int]]] = []
+        for coordinate, score in matches:
+            if not groups or coordinate > groups[-1][-1][0] + merge_gap + 1:
+                groups.append([])
+            groups[-1].append((coordinate, score))
+        return [
+            _PixelBand(
+                group[0][0],
+                group[-1][0],
+                max(group, key=lambda item: item[1])[0],
+                max(score for _coordinate, score in group),
+            )
+            for group in groups
+        ]
+
+    @staticmethod
+    def _regular_run(bands: list[_PixelBand], required: int) -> tuple[int, ...] | None:
+        if required < 2 or len(bands) < required:
+            return None
+        best: tuple[float, tuple[int, ...]] | None = None
+        for start in range(len(bands) - required + 1):
+            values = tuple(band.peak for band in bands[start : start + required])
+            gaps = [right - left for left, right in zip(values, values[1:])]
+            ordered = sorted(gaps)
+            median = ordered[len(ordered) // 2]
+            if median < 8:
+                continue
+            deviations = [abs(gap - median) / median for gap in gaps]
+            if max(deviations, default=1.0) > 0.22:
+                continue
+            score = sum(deviations) / len(deviations)
+            if best is None or score < best[0]:
+                best = (score, values)
+        return best[1] if best else None
+
+    @classmethod
+    def _detect_scan_grid(cls, binary, date_count: int, dpi: int) -> _ScanGrid:
+        width, height = binary.size
+        horizontal = cls._projection_bands(
+            binary,
+            axis="row",
+            start=round(height * 0.05),
+            end=round(height * 0.45),
+            cross_start=round(width * 0.015),
+            cross_end=round(width * 0.985),
+            minimum_ratio=0.60,
+            merge_gap=max(2, round(dpi / 90)),
+        )
+        selected: tuple[_PixelBand, _PixelBand, list[_PixelBand], tuple[int, ...]] | None = None
+        for top_index, top in enumerate(horizontal):
+            for bottom in horizontal[top_index + 1 : top_index + 6]:
+                gap = bottom.start - top.end
+                if gap < dpi * 0.08 or gap > dpi * 0.45:
+                    continue
+                vertical = cls._projection_bands(
+                    binary,
+                    axis="column",
+                    start=round(width * 0.01),
+                    end=round(width * 0.99),
+                    cross_start=top.end + 1,
+                    cross_end=bottom.start,
+                    minimum_ratio=0.62,
+                    merge_gap=max(1, round(dpi / 180)),
+                )
+                run = cls._regular_run(vertical, date_count + 1)
+                if run is not None:
+                    selected = (top, bottom, vertical, run)
+                    break
+            if selected is not None:
+                break
+        if selected is None:
+            raise PdfParseError(
+                f"Garis tabel scan tidak dapat direkonstruksi untuk {date_count} kolom tanggal. "
+                "Pastikan seluruh tabel terlihat, lurus, dan tidak terpotong."
+            )
+
+        header_top, header_bottom, vertical, date_boundaries = selected
+        spacing = sorted(
+            right - left
+            for left, right in zip(date_boundaries, date_boundaries[1:])
+        )[date_count // 2]
+        name_candidates = [
+            band.peak
+            for band in vertical
+            if 2.5 * spacing <= date_boundaries[0] - band.peak <= 8.0 * spacing
+        ]
+        name_left = min(name_candidates) if name_candidates else max(
+            0, round(date_boundaries[0] - 3.5 * spacing)
+        )
+
+        row_scores: list[int] = []
+        table_left = max(0, name_left)
+        table_right = min(width, date_boundaries[-1] + max(2, round(dpi / 80)))
+        for y in range(height):
+            row_scores.append(
+                binary.crop((table_left, y, table_right, y + 1)).histogram()[0]
+            )
+        rows = cls._projection_bands(
+            binary,
+            axis="row",
+            start=header_bottom.start,
+            end=round(height * 0.985),
+            cross_start=table_left,
+            cross_end=table_right,
+            minimum_ratio=0.43,
+            merge_gap=max(3, round(dpi / 32)),
+        )
+        rows = [row for row in rows if row.start > header_bottom.end + 2]
+        rows = cls._recover_weak_row_bands(rows, row_scores, header_bottom, height, dpi)
+        if len(rows) < 3:
+            raise PdfParseError(
+                "Baris pegawai pada tabel scan tidak dapat dideteksi. Pastikan garis tabel cukup tajam."
+            )
+        return _ScanGrid(
+            name_left=name_left,
+            date_boundaries=date_boundaries,
+            header_top=header_top,
+            header_bottom=header_bottom,
+            row_bands=tuple(rows),
+        )
+
+    @staticmethod
+    def _recover_weak_row_bands(
+        rows: list[_PixelBand],
+        row_scores: list[int],
+        header_bottom: _PixelBand,
+        image_height: int,
+        dpi: int,
+    ) -> list[_PixelBand]:
+        if not rows:
+            return rows
+        gaps = [
+            right.peak - left.peak
+            for left, right in zip(rows, rows[1:])
+            if dpi * 0.18 <= right.peak - left.peak <= dpi * 0.43
+        ]
+        if not gaps:
+            return rows
+        typical = sorted(gaps)[len(gaps) // 2]
+        result: list[_PixelBand] = []
+        virtual_end = _PixelBand(
+            round(image_height * 0.98),
+            round(image_height * 0.98),
+            round(image_height * 0.98),
+            0,
+        )
+        for left, right in zip(rows, rows[1:] + [virtual_end]):
+            result.append(left)
+            gap = right.peak - left.peak
+            if gap <= typical * 1.55:
+                continue
+            missing = max(1, round(gap / typical) - 1)
+            for number in range(1, missing + 1):
+                target = round(left.peak + gap * number / (missing + 1))
+                radius = max(4, round(typical * 0.28))
+                low = max(header_bottom.end + 1, target - radius)
+                high = min(image_height - 1, target + radius)
+                peak = max(range(low, high + 1), key=row_scores.__getitem__)
+                peak_score = row_scores[peak]
+                if peak_score <= 0:
+                    continue
+                threshold = peak_score * 0.68
+                start = peak
+                end = peak
+                while start > low and row_scores[start - 1] >= threshold:
+                    start -= 1
+                while end < high and row_scores[end + 1] >= threshold:
+                    end += 1
+                result.append(_PixelBand(start, end, peak, peak_score))
+        result.sort(key=lambda band: band.peak)
+        return result
+
+    @staticmethod
+    def _tesseract_executable() -> str | None:
+        explicit = os.environ.get("TESSERACT_CMD", "").strip()
+        candidates = [explicit, shutil.which("tesseract") or ""]
+        for root in (
+            os.environ.get("PROGRAMFILES", ""),
+            os.environ.get("PROGRAMFILES(X86)", ""),
+            os.environ.get("LOCALAPPDATA", ""),
+        ):
+            if root:
+                candidates.extend((
+                    str(Path(root) / "Tesseract-OCR" / "tesseract.exe"),
+                    str(Path(root) / "Programs" / "Tesseract-OCR" / "tesseract.exe"),
+                ))
+        return next((candidate for candidate in dict.fromkeys(candidates) if candidate and Path(candidate).is_file()), None)
+
+    @classmethod
+    def _ocr_region(
+        cls,
+        image,
+        *,
+        psm: int = 6,
+        whitelist: str = "",
+        threshold: bool = False,
+    ) -> str:
+        from PIL import Image, ImageOps
+
+        prepared = ImageOps.autocontrast(image.convert("L"))
+        if threshold:
+            prepared = prepared.point(lambda value: 0 if value < 175 else 255)
+        target_height = 260 if prepared.width > prepared.height * 1.8 else 320
+        scale = max(1.0, min(5.0, target_height / max(1, prepared.height)))
+        if scale > 1.05:
+            prepared = prepared.resize(
+                (
+                    max(1, round(prepared.width * scale)),
+                    max(1, round(prepared.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+        prepared = ImageOps.expand(prepared, border=max(16, round(18 * scale)), fill=255)
+        buffer = io.BytesIO()
+        prepared.save(buffer, format="PNG")
+        payload = buffer.getvalue()
+        executable = cls._tesseract_executable()
+        if executable:
+            command = [
+                executable, "stdin", "stdout", "--psm", str(psm),
+                "-l", "eng", "--tessdata-dir", cls._tessdata_path(),
+            ]
+            if whitelist:
+                command.extend(("-c", f"tessedit_char_whitelist={whitelist}"))
+            try:
+                result = subprocess.run(
+                    command,
+                    input=payload,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                    timeout=20,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                return " ".join(result.stdout.decode("utf-8", errors="replace").split())
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        # PyMuPDF includes an in-process Tesseract bridge. It is slower for
+        # many small regions but keeps scan import working when tesseract.exe
+        # is not available beside a frozen application.
+        try:
+            import fitz
+            with fitz.open() as document:
+                page = document.new_page(width=prepared.width, height=prepared.height)
+                page.insert_image(page.rect, stream=payload)
+                text_page = page.get_textpage_ocr(
+                    language="eng", dpi=300, full=True, tessdata=cls._tessdata_path()
+                )
+                return " ".join(
+                    page.get_text("text", textpage=text_page, sort=True).split()
+                )
+        except Exception as exc:
+            raise PdfParseError(f"OCR area tabel gagal: {exc}") from exc
+
+    @staticmethod
+    def _normalize_ocr_identity(value: str) -> str | None:
+        cleaned = " ".join(value.replace("\n", " ").split()).strip(" |_=~-:")
+        if not cleaned:
+            return None
+        cleaned = cleaned.replace("{", "(").replace("[", "(")
+        cleaned = cleaned.replace("}", ")").replace("]", ")")
+        matches = list(re.finditer(r"\(\s*([\d\s|]+)\s*\)", cleaned))
+        if matches:
+            match = matches[-1]
+            finger_id = re.sub(r"\D", "", match.group(1))
+            name = cleaned[: match.start()]
+        else:
+            match = re.search(r"(?:\(|\b)([\d\s|]{1,16})\)?\s*$", cleaned)
+            if not match:
+                return None
+            finger_id = re.sub(r"\D", "", match.group(1))
+            name = cleaned[: match.start()]
+        name = re.sub(r"[^0-9A-Za-zÀ-ÿ.' -]+", " ", name)
+        name = " ".join(name.split()).strip(" .|_=-")
+        if len(name) < 2 or not finger_id or len(finger_id) > 10:
+            return None
+        return f"{name}({finger_id})"
+
+    @staticmethod
+    def _cell_ink_kind(image) -> str:
+        from PIL import ImageOps
+
+        ink = ImageOps.invert(image.convert("L")).point(
+            lambda value: 255 if value > 90 else 0
+        )
+        count = ink.histogram()[255]
+        if count < max(9, round(image.width * image.height * 0.0020)):
+            return "blank"
+        box = ink.getbbox()
+        if box:
+            width = box[2] - box[0]
+            height = box[3] - box[1]
+            if height <= max(4, image.height * 0.18) and width <= image.width * 0.72:
+                return "dash"
+        return "content"
+
+    @staticmethod
+    def _normalize_ocr_cell(value: str) -> str:
+        cleaned = value.upper().replace("—", "-").replace("–", "-")
+        letters = re.sub(r"[^A-Z]", "", cleaned)
+        if letters in {"W", "WW"}:
+            return "W"
+        # Tulisan tangan "TL" pada laporan scan sering kehilangan goresan
+        # horizontal huruf L dan dibaca T/TT/TE oleh Tesseract.
+        if letters in {"T", "TT", "TE"}:
+            return "TL"
+        if letters in {"WFH", "TL", "I", "S"}:
+            return letters
+
+        time_matches: list[tuple[str, int, int]] = []
+        for match in re.finditer(r"(?<!\d)(\d{1,3})\s*[:.;]\s*([0-5]\d)(?!\d)", cleaned):
+            hour_text, minute = match.groups()
+            if len(hour_text) == 3 and int(hour_text) > 23:
+                hour_text = hour_text[-2:]
+            hour = int(hour_text)
+            if 0 <= hour <= 23:
+                time_matches.append((f"{hour:02d}:{minute}", match.start(), match.end()))
+        if len(time_matches) >= 2:
+            return f"{time_matches[0][0]}-{time_matches[1][0]}"
+        if len(time_matches) == 1:
+            value, start, end = time_matches[0]
+            if re.search(r"-\s*$", cleaned[end:]):
+                return f"{value}-"
+            if re.search(r"^\s*-", cleaned[:start]):
+                return f"-{value}"
+            return value
+        return "-" if not cleaned.strip(" |_=~.") else cleaned.strip()
+
+    @classmethod
+    def _is_recognized_ocr_cell(cls, value: str) -> bool:
+        if value in {"-", "W", "WFH", "TL", "I", "S"}:
+            return True
+        match = COMPLETE_RE.fullmatch(value)
+        if match:
+            return all(cls._parse_time(part) is not None for part in match.groups())
+        match = MISSING_OUT_RE.fullmatch(value) or MISSING_IN_RE.fullmatch(value)
+        return bool(match and cls._parse_time(match.group(1)) is not None)
+
+    @classmethod
+    def _ocr_scan_cell(cls, image) -> str:
+        whitelist = "0123456789:.-/WTLISEKFH"
+        first = cls._normalize_ocr_cell(
+            cls._ocr_region(image, psm=6, whitelist=whitelist)
+        )
+        if cls._is_recognized_ocr_cell(first):
+            return first
+
+        thresholded = cls._normalize_ocr_cell(
+            cls._ocr_region(image, psm=6, whitelist=whitelist, threshold=True)
+        )
+        if cls._is_recognized_ocr_cell(thresholded) and thresholded != "-":
+            return thresholded
+
+        # Most one-character false positives are fragments of a printed dash.
+        # Accept a dash only after a second, binarized OCR pass agrees; retain
+        # single-time results as INVALID so the UI asks for human review.
+        first_has_time = bool(re.search(r"\d{2}:\d{2}", first))
+        if thresholded == "-" and not first_has_time:
+            return "-"
+
+        # OCR bagian atas dan bawah secara terpisah. Cara ini memulihkan
+        # pasangan jam pada sel sempit, sekaligus membedakan fragmen garis
+        # tabel (L/E/1) dari isi sebenarnya tanpa menebak jam.
+        midpoint = max(1, image.height // 2)
+        halves = (
+            image.crop((0, 0, image.width, min(image.height, midpoint + 5))),
+            image.crop((0, max(0, midpoint - 5), image.width, image.height)),
+        )
+        half_values = [
+            cls._normalize_ocr_cell(
+                cls._ocr_region(half, psm=7, whitelist=whitelist)
+            )
+            for half in halves
+        ]
+        times: list[str] = []
+        for value in half_values:
+            times.extend(re.findall(r"\d{2}:\d{2}", value))
+        if len(times) >= 2:
+            combined = f"{times[0]}-{times[1]}"
+            if cls._is_recognized_ocr_cell(combined):
+                return combined
+        for value in half_values:
+            if value in {"W", "WFH", "TL", "I", "S"}:
+                return value
+        if not first_has_time and "-" in half_values:
+            return "-"
+        return first
+
+    @classmethod
+    def _ocr_table_page_data(cls, page, expected_labels: list[str]) -> _PageData:
+        try:
+            import fitz
+            from PIL import Image
+
+            dpi = 400
+            pixmap = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+            image = Image.frombytes("L", (pixmap.width, pixmap.height), pixmap.samples)
+            binary = image.point(lambda value: 0 if value < 155 else 255)
+            grid = cls._detect_scan_grid(binary, len(expected_labels), dpi)
+        except PdfParseError:
+            raise
+        except Exception as exc:
+            raise PdfParseError(f"Tabel scan halaman {page.number + 1} gagal dianalisis: {exc}") from exc
+
+        scale_x = page.rect.width / image.width
+        scale_y = page.rect.height / image.height
+        words: list[dict[str, Any]] = []
+        for index, label in enumerate(expected_labels):
+            left = grid.date_boundaries[index]
+            right = grid.date_boundaries[index + 1]
+            words.append({
+                "x0": left * scale_x,
+                "x1": right * scale_x,
+                "top": grid.header_top.end * scale_y,
+                "bottom": grid.header_bottom.start * scale_y,
+                "text": label,
+            })
+
+        padding_x = max(3, round(dpi / 50))
+        padding_y = max(3, round(dpi / 70))
+        for upper, lower in zip(grid.row_bands, grid.row_bands[1:]):
+            top = upper.end + padding_y
+            bottom = lower.start - padding_y
+            if bottom - top < dpi * 0.10:
+                continue
+            name_crop = image.crop((
+                grid.name_left + padding_x,
+                upper.start + padding_y,
+                grid.date_boundaries[0] - padding_x,
+                lower.end - padding_y,
+            ))
+            identity_candidates = [
+                cls._normalize_ocr_identity(cls._ocr_region(name_crop, psm=6)),
+                cls._normalize_ocr_identity(
+                    cls._ocr_region(name_crop, psm=6, threshold=True)
+                ),
+            ]
+            # The greyscale pass preserves thin characters better.  Use the
+            # thresholded pass only as a fallback; choosing the longest result
+            # favoured grid noise and could turn JAMES MAKIKAMA(152) into a
+            # longer but incorrect identity.
+            identity = next(
+                (candidate for candidate in identity_candidates if candidate),
+                None,
+            )
+            if identity is not None and len(identity.split("(", 1)[0]) < 7:
+                sparse = cls._normalize_ocr_identity(cls._ocr_region(name_crop, psm=11))
+                if sparse and len(sparse.split("(", 1)[0]) > len(identity.split("(", 1)[0]):
+                    identity = sparse
+            if identity is None:
+                continue
+
+            row_top = top * scale_y
+            words.append({
+                "x0": (grid.name_left + padding_x) * scale_x,
+                "x1": (grid.date_boundaries[0] - padding_x) * scale_x,
+                "top": row_top,
+                "bottom": bottom * scale_y,
+                "text": identity,
+            })
+            for index in range(len(expected_labels)):
+                left = grid.date_boundaries[index] + padding_x
+                right = grid.date_boundaries[index + 1] - padding_x
+                cell = image.crop((left, top, right, bottom))
+                kind = cls._cell_ink_kind(cell)
+                if kind == "blank":
+                    continue
+                raw = "-" if kind == "dash" else cls._ocr_scan_cell(cell)
+                words.append({
+                    "x0": left * scale_x,
+                    "x1": right * scale_x,
+                    "top": row_top + scale_y,
+                    "bottom": bottom * scale_y,
+                    "text": raw,
+                })
+        if not any(IDENTITY_RE.fullmatch(str(word["text"])) for word in words):
+            raise PdfParseError(
+                f"Nama dan ID pegawai pada halaman scan {page.number + 1} tidak dapat dibaca. "
+                "Pastikan kolom Nama tidak terpotong."
+            )
+        return _PageData("", words, True)
 
     @staticmethod
     def _normalize_date_label(value: str) -> str | None:

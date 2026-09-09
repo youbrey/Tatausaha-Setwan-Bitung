@@ -837,11 +837,20 @@ class TextItem(QGraphicsTextItem):
             self.setFont(font)
 
     def _apply_resize_font(self) -> None:
-        """Perbarui ukuran visual saat drag tanpa memformat ulang dokumen."""
+        """Perbarui geometri tanpa pernah mengganti dokumen teks saat drag."""
+        snapshot = self._resize_text or self.toPlainText()
+        width = max(self.MIN_WIDTH, float(self.data.get("width", self.textWidth())))
+        self.setTextWidth(width)
         self.setFont(self._configured_font())
         self.setDefaultTextColor(QColor(str(self.data.get("color", "#0f172a"))))
-        if self.toPlainText() != self._resize_text:
-            self.setPlainText(self._resize_text)
+        # QGraphicsTextItem should preserve its QTextDocument, but some Qt
+        # Windows builds have cleared it while font and width changed in the
+        # same mouse move. Restore the snapshot immediately and reapply the
+        # requested width so the item never disappears from the scene.
+        if self.toPlainText() != snapshot:
+            self.document().setPlainText(snapshot)
+            self.setTextWidth(width)
+            self.setFont(self._configured_font())
 
     def set_locked(self, locked: bool) -> None:
         self.data["locked"] = locked
@@ -898,7 +907,7 @@ class TextItem(QGraphicsTextItem):
                     self._start_text_rect.left(),
                     self._start_text_rect.top(),
                 )
-            self.setTextWidth(max(self.MIN_WIDTH, width))
+            self.data["width"] = max(self.MIN_WIDTH, width)
             self._apply_resize_font()
             self.data["width"] = self.textWidth()
             new_rect = self._content_rect()
@@ -937,7 +946,6 @@ class TextItem(QGraphicsTextItem):
             scale = font_size / self._start_font_size
             self.data["font_size"] = font_size
             self.data["width"] = max(self.MIN_WIDTH, self._start_text_width * scale)
-            self.setTextWidth(float(self.data["width"]))
             self._apply_resize_font()
             new_rect = self._content_rect()
             new_anchor = {
@@ -964,10 +972,11 @@ class TextItem(QGraphicsTextItem):
         if self._resize_handle:
             self._resize_handle = ""
             if self.toPlainText() != self._resize_text:
-                self.setPlainText(self._resize_text)
+                self.document().setPlainText(self._resize_text)
+                self.setTextWidth(float(self.data.get("width", self.textWidth())))
+                self.setFont(self._configured_font())
             self.data["text"] = self._resize_text
             self.data["width"] = self.textWidth()
-            self.apply_font()
             self._resize_text = ""
             self.unsetCursor()
             self.changed.emit()
@@ -1198,8 +1207,19 @@ class DocumentScene(QGraphicsScene):
         return item
 
     def add_text(self, text: str = "Klik dua kali untuk mengubah teks") -> TextItem:
+        if self.active_crop_item is not None:
+            self.finish_crop(True)
+        if self.collage_overlay is not None:
+            self.finish_collage_resize()
+        self.clearSelection()
         item = TextItem(TextElement(text=text).__dict__)
         item.changed.connect(self.content_changed)
+        editable_items = [
+            existing
+            for existing in self.items()
+            if isinstance(existing, (PhotoItem, TextItem))
+        ]
+        item.setZValue(max((existing.zValue() for existing in editable_items), default=0.0) + 1.0)
         self.addItem(item)
         item.setSelected(True)
         self.content_changed.emit()

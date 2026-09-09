@@ -51,8 +51,22 @@ class AttendanceApplicationService:
 
     def import_pdf(self, path: str | Path) -> RecapSession:
         result = self.parser.parse(path)
-        calculations = [self.engine.calculate(entry) for entry in result.entries]
-        return RecapSession(result, calculations)
+        special_values = {code.value: code for code in SpecialCode if code != SpecialCode.NONE}
+        overrides = {
+            (entry.employee.finger_id, entry.work_date): DayOverride(
+                code=special_values[entry.raw_cell.strip().upper()]
+            )
+            for entry in result.entries
+            if entry.raw_cell.strip().upper() in special_values
+        }
+        calculations = [
+            self.engine.calculate(
+                entry,
+                overrides.get((entry.employee.finger_id, entry.work_date)),
+            )
+            for entry in result.entries
+        ]
+        return RecapSession(result, calculations, overrides=overrides)
 
     def recalculate(self, session: RecapSession) -> None:
         session.calculations = [
