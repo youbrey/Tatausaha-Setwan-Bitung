@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from collections import OrderedDict
@@ -16,8 +17,11 @@ from sekretariat_app.sips.constants import (
 )
 from sekretariat_app.sips.document_generators import (
     buat_surat_pemberitahuan_multi,
+    buat_surat_izin_pendamping_asn,
     buat_surat_tugas_asn,
     buat_surat_tugas_dprd,
+    buat_surat_tugas_pendamping_asn,
+    format_dprd_delegation,
 )
 from sekretariat_app.sips.docx_utils import (
     _combine_word_pages,
@@ -28,6 +32,7 @@ from sekretariat_app.sips.docx_utils import (
     build_tujuan_richtext,
     cleanup_skenario_paripurna,
     ensure_numbered_slots,
+    normalize_travel_attendance_table,
 )
 from sekretariat_app.sips.master_data import PersonnelMaster
 from sekretariat_app.sips.meeting_attendance import generate_daftar_hadir_rapat
@@ -57,21 +62,44 @@ from sekretariat_app.sips.settings import (
 from sekretariat_app.sips.sppd_generators import buat_sppd_asn, buat_sppd_dprd
 from sekretariat_app.sips.text_utils import (
     detect_zona_waktu,
+    extract_travel_purpose,
     extract_city_name,
+    format_companion_activity,
+    format_travel_activity,
+    format_travel_purpose_clause,
     format_jabatan_penandatanganan,
     format_signature_position,
     generate_periods,
     increment_nomor_paripurna,
     is_in_sulawesi_utara,
     is_plain_region_name,
+    resolve_travel_purposes,
     slugify_filename,
-    strip_jenis_perjalanan_prefix,
 )
 
 
 def _split_signer(value: str, default_position: str) -> tuple[str, str]:
     position, name = value.split(" - ", 1) if " - " in value else (default_position, value)
     return format_jabatan_penandatanganan(position.strip()), name.strip()
+
+
+def _person_name_key(value: str) -> str:
+    return re.sub(r"[^0-9a-z]+", "", str(value or "").casefold())
+
+
+def _find_person_by_name(people: Iterable[dict[str, Any]], name: str) -> dict[str, Any]:
+    wanted = _person_name_key(name)
+    return next(
+        (person for person in people if _person_name_key(person.get("nama", "")) == wanted),
+        {},
+    )
+
+
+def _format_rank_grade(value: str) -> str:
+    clean = " ".join(str(value or "").split())
+    if "," in clean:
+        return clean
+    return re.sub(r"\s+([IVX]+/[a-d])$", r", \1", clean, flags=re.IGNORECASE)
 
 
 def _is_taf(value: str) -> bool:
@@ -115,11 +143,29 @@ class SIPSService:
         signer_asn_position, signer_asn_name = _split_signer(data.signer_asn, "SEKRETARIS DPRD")
         signer_dprd_formatted = format_signature_position(signer_dprd_position)
         signer_asn_formatted = format_signature_position(signer_asn_position)
+        signer_asn_record = _find_person_by_name(self.master.asn, signer_asn_name)
         destination_text = " / ".join(data.destinations)
         city_names = [extract_city_name(destination) for destination in data.destinations]
         transport = "Pesawat / Mobil / Kereta" if any(
             not is_in_sulawesi_utara(city) for city in city_names
         ) else "Mobil"
+        task_purpose, notice_purpose = resolve_travel_purposes(
+            data.subject,
+            data.notice_subject,
+            data.travel_type,
+        )
+        task_activity = format_travel_activity(
+            task_purpose,
+            data.travel_type,
+            data.destinations,
+        )
+        delegation = format_dprd_delegation(data.dprd)
+        companion_activity = format_companion_activity(
+            task_purpose,
+            data.travel_type,
+            data.destinations,
+            delegation,
+        )
         numbers = data.document_numbers
         return {
             "nomor_surat": numbers.get("surat_tugas_dprd", ""),
@@ -130,6 +176,7 @@ class SIPSService:
             "nomor_spd_asn": numbers.get("spd_asn", ""),
             "nomor_spd_pelaksana": numbers.get("spd_pelaksana", numbers.get("spd_asn", "")),
             "nomor_spd_pendamping": numbers.get("spd_pendamping", numbers.get("spd_asn", "")),
+            "nomor_izin_pendamping": numbers.get("izin_pendamping", ""),
             "nomor_spd": numbers.get("spd_dprd", numbers.get("spd_asn", "")),
             "tanggal_surat": format_date_id(data.letter_date),
             "tanggal_surat_asn": format_date_id(data.letter_date),
@@ -138,10 +185,14 @@ class SIPSService:
             "tujuan_bertugas_list": list(data.destinations),
             "dasar_surat_dprd": data.basis_dprd.strip(),
             "dasar_surat_asn": data.basis_asn.strip(),
-            "materi_tugas": data.subject.strip(),
-            "materi_tugas_asn": data.subject.strip(),
-            "isi_surat_pemberitahuan": data.notice_subject.strip(),
-            "isi_surat_izin": data.subject.strip(),
+            "materi_tugas": task_activity or data.subject.strip(),
+            "materi_tugas_asn": task_activity or data.subject.strip(),
+            "materi_tugas_raw": data.subject.strip(),
+            "materi_tugas_purpose": task_purpose,
+            "materi_tugas_pendamping": companion_activity or task_activity,
+            "materi_pemberitahuan": notice_purpose,
+            "isi_surat_pemberitahuan": notice_purpose or data.notice_subject.strip(),
+            "isi_surat_izin": task_activity or data.subject.strip(),
             "tanggal_mulai": format_date_id(data.start_date),
             "tanggal_akhir": format_date_id(data.end_date),
             "jumlah_angka": duration,
@@ -150,13 +201,15 @@ class SIPSService:
             "nama_ttd": signer_dprd_name,
             "jabatan_ttd_asn": signer_asn_formatted,
             "nama_ttd_asn": signer_asn_name,
+            "pangkat_ttd_asn": _format_rank_grade(signer_asn_record.get("pangkat", "")),
+            "nip_ttd_asn": signer_asn_record.get("nip", ""),
             "transportasi_otomatis": transport,
             "tanggal_surat_info": format_date_id(data.letter_date),
             "tujuan_surat_info": destination_text,
             "pelaksana_tugas_dprd_info": "Pimpinan dan Anggota",
             "jenis_perjalanan_info": data.travel_type,
             "tujuan_bertugas_info": destination_text,
-            "materi_tugas_info": data.notice_subject.strip(),
+            "materi_tugas_info": notice_purpose or data.notice_subject.strip(),
             "hari_info": "Sesuai Jadwal",
             "tanggal_bertugas_info": f"{format_date_id(data.start_date)} s/d {format_date_id(data.end_date)}",
             "pelaksana_tugas_info": "Anggota DPRD",
@@ -226,6 +279,11 @@ class SIPSService:
             return preview_document is None or preview_document in keys
 
         if data.mode == "dprd":
+            companion_context = dict(context)
+            companion_context["materi_tugas_asn"] = context["materi_tugas_pendamping"]
+            companion_context["maksud_perjalanan_sppd"] = (
+                f"Mendampingi {context['materi_tugas_pendamping']}"
+            )
             if data.dprd and selected("task-dprd"):
                 path = output("surat-tugas")
                 self._run_generation(
@@ -236,7 +294,17 @@ class SIPSService:
                 path = output("surat-tugas-pendamping")
                 self._run_generation(
                     report, "Surat Tugas Pendamping ASN", [path],
-                    lambda: buat_surat_tugas_asn(context, data.asn, path),
+                    lambda: buat_surat_tugas_pendamping_asn(
+                        companion_context, data.asn, path,
+                    ),
+                )
+            if data.asn and selected("permission-asn"):
+                path = output("surat-izin-pendamping")
+                self._run_generation(
+                    report, "Surat Izin Pendamping ASN", [path],
+                    lambda: buat_surat_izin_pendamping_asn(
+                        companion_context, data.asn, path,
+                    ),
                 )
             if (data.dprd or data.asn) and selected("notice-dprd"):
                 path = output("surat-pemberitahuan")
@@ -262,7 +330,7 @@ class SIPSService:
                 self._run_generation(
                     report, "SPD Pendamping ASN", [front, back],
                     lambda: buat_sppd_asn(
-                        TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, context,
+                        TEMPLATE_SPD_DEPAN, TEMPLATE_SPD_BELAKANG, companion_context,
                         data.asn, data.destinations, front, back,
                     ),
                 )
@@ -376,6 +444,7 @@ class SIPSService:
                 add("task-dprd", "surat-tugas")
             if data.asn:
                 add("task-asn", "surat-tugas-pendamping")
+                add("permission-asn", "surat-izin-pendamping")
             if data.dprd or data.asn:
                 add("notice-dprd", "surat-pemberitahuan")
             if data.dprd:
@@ -418,8 +487,12 @@ class SIPSService:
                     "pelaksana_tugas_dprd": actor_text,
                     "JENIS_PERJALANAN_DAFTAR_HADIR": context.get("jenis_perjalanan", "").upper(),
                     "TEMPAT_TUGAS_DPRD_DAFTAR_HADIR": institution,
-                    "MATERI_TUGAS_DPRD_DAFTAR_HADIR": strip_jenis_perjalanan_prefix(
-                        context.get("materi_tugas", ""), context.get("jenis_perjalanan", "")
+                    "MATERI_TUGAS_DPRD_DAFTAR_HADIR": format_travel_purpose_clause(
+                        context.get("materi_tugas_purpose")
+                        or extract_travel_purpose(
+                            context.get("materi_tugas", ""),
+                            context.get("jenis_perjalanan", ""),
+                        )
                     ).upper(),
                     "HARI": period["hari"],
                     "TANGGAL_DAFTAR_HADIR": period["tanggal"],
@@ -435,6 +508,7 @@ class SIPSService:
                 document = Document(temporary)
                 rows = [[str(index + 1), item.get("nama", ""), item.get("jabatan", "")] for index, item in enumerate(people)]
                 _fill_table_rows_from_master(document, ["no", "nama", "jabatan", "tanda tangan"], rows, max_tables=1)
+                normalize_travel_attendance_table(document)
                 _force_daftar_hadir_page_break(document)
                 document.save(temporary)
                 temporary_files.append(temporary)

@@ -6,6 +6,11 @@ dan pembuatan daftar periode tanggal per tujuan perjalanan dinas.
 import re
 
 _ROMAN_TOKENS = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"}
+_DESTINATION_ACRONYMS = {
+    "ASN", "BKN", "BPK", "BPKP", "BUMD", "BUMN", "CV", "DKI", "DPR",
+    "DPRD", "KPK", "KPU", "OPD", "PNS", "PT", "RI", "RSUD", "RSUP",
+    "SKPD",
+}
 
 
 def slugify_filename(text):
@@ -77,6 +82,139 @@ def strip_jenis_perjalanan_prefix(materi_text, jenis_perjalanan=""):
             return text[len(prefix):].strip()
 
     return text
+
+
+def format_destination_display(value):
+    """Rapikan kapitalisasi tujuan tanpa mengubah singkatan resmi.
+
+    Combo tujuan menerima teks bebas dan operator sering menulis seluruh nama
+    instansi dengan huruf kapital. Surat resmi memakai bentuk ``DPRD Kota
+    Manado``; karena itu setiap kata biasa dibuat title-case sedangkan DPRD,
+    RI, RSUD, angka Romawi, dan singkatan sejenis tetap kapital.
+    """
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" ,;-")
+    if not text:
+        return ""
+
+    def normalize_token(match):
+        token = match.group(0)
+        upper = token.upper()
+        if upper in _DESTINATION_ACRONYMS or upper in _ROMAN_TOKENS:
+            return upper
+        return token[:1].upper() + token[1:].lower()
+
+    return re.sub(r"[A-Za-z]+", normalize_token, text)
+
+
+def extract_travel_purpose(subject, travel_type=""):
+    """Ambil *isi* materi tanpa jenis, rute, atau frasa ``dalam rangka``.
+
+    Nilai form lama tidak seragam: ada yang hanya berisi materi, ada yang
+    berupa kalimat perjalanan lengkap, dan kolom Pemberitahuan kadang diawali
+    nama pelaksana serta frasa ``akan melakukan``. Fungsi ini sengaja
+    mengembalikan isi materi saja supaya setiap template dapat memasang rute
+    dan ``dalam rangka`` tepat satu kali.
+    """
+    text = re.sub(r"\s+", " ", str(subject or "")).strip().rstrip(".")
+    if not text:
+        return ""
+
+    purpose_match = re.search(r"\bdalam\s+rangka\b", text, flags=re.IGNORECASE)
+    if purpose_match:
+        return text[purpose_match.end():].strip(" ,;:-")
+
+    # Hilangkan pembuka khusus Surat Pemberitahuan, misalnya
+    # "Pimpinan ... akan melakukan Studi Banding ...".
+    actor_match = re.search(
+        r"\bakan\s+(?:melakukan|melaksanakan)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if actor_match:
+        text = text[actor_match.end():].strip(" ,;:-")
+    else:
+        text = re.sub(
+            r"^(?:melakukan|melaksanakan)\b\s*",
+            "",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        ).strip(" ,;:-")
+
+    stripped = strip_jenis_perjalanan_prefix(text, travel_type)
+    # Sisa yang diawali "ke" merupakan rute tanpa materi. Jangan menduplikasi
+    # rute; pemanggil dapat memakai materi dari kolom form yang satunya.
+    if re.match(r"^ke\b", stripped, flags=re.IGNORECASE):
+        return ""
+    return stripped.strip(" ,;:-").rstrip(".")
+
+
+def resolve_travel_purposes(subject, notice_subject, travel_type=""):
+    """Satukan dua pola input form tanpa membuang materi kegiatan.
+
+    ``subject`` adalah sumber utama Surat Tugas/SPD/Daftar Hadir, sedangkan
+    ``notice_subject`` boleh mempunyai redaksi khusus Pemberitahuan. Jika
+    salah satu kolom hanya berisi rute atau berhenti pada ``dalam rangka``,
+    materi dari kolom lain dipakai sebagai fallback.
+    """
+    task_purpose = extract_travel_purpose(subject, travel_type)
+    notice_purpose = extract_travel_purpose(notice_subject, travel_type)
+    shared_purpose = task_purpose or notice_purpose
+    return shared_purpose, notice_purpose or shared_purpose
+
+
+def format_travel_purpose_clause(purpose):
+    """Format materi untuk template yang belum memiliki ``dalam rangka``."""
+    clean = re.sub(r"\s+", " ", str(purpose or "")).strip(" ,;:-.")
+    clean = re.sub(r"^dalam\s+rangka\b\s*", "", clean, flags=re.IGNORECASE)
+    return f"dalam rangka {clean}" if clean else ""
+
+
+def format_travel_activity(purpose, travel_type, destinations):
+    """Bangun redaksi perjalanan lengkap dari komponen form yang kanonis."""
+    travel_text = re.sub(r"\s+", " ", str(travel_type or "")).strip()
+    destination_text = join_indonesian(
+        item for item in (format_destination_display(value) for value in destinations) if item
+    )
+    if travel_text and destination_text:
+        route = f"{travel_text} ke {destination_text}"
+    else:
+        route = travel_text or destination_text
+    clause = format_travel_purpose_clause(purpose)
+    return " ".join(item for item in (route, clause) if item).strip()
+
+
+def format_companion_activity(purpose, travel_type, destinations, delegation):
+    """Bangun materi khusus ASN yang mendampingi rombongan DPRD.
+
+    Berbeda dari pelaksana utama, pendamping harus menyebut rombongan DPRD
+    di antara jenis perjalanan dan tujuan, misalnya ``Kunjungan Kerja
+    Pimpinan dan Anggota Komisi I ... ke DPRD Kota Manado``.
+    """
+    travel_text = re.sub(r"\s+", " ", str(travel_type or "")).strip()
+    delegation_text = re.sub(r"\s+", " ", str(delegation or "")).strip()
+    destination_text = join_indonesian(
+        item for item in (format_destination_display(value) for value in destinations) if item
+    )
+    if not delegation_text:
+        return format_travel_activity(purpose, travel_text, destinations)
+
+    route = " ".join(item for item in (travel_text, delegation_text) if item)
+    if destination_text:
+        route = f"{route} ke {destination_text}".strip()
+    clause = format_travel_purpose_clause(purpose)
+    return " ".join(item for item in (route, clause) if item).strip()
+
+
+def format_activity_for_destination(subject, travel_type, destination):
+    """Bangun isi pemberitahuan untuk satu tujuan, bukan seluruh rute.
+
+    Satu dokumen Pemberitahuan terdiri dari satu halaman per tujuan. Nilai
+    materi dari form dapat memuat semua tujuan, tetapi halaman aktif hanya
+    boleh menyebut tujuan milik halaman tersebut.
+    """
+    purpose = extract_travel_purpose(subject, travel_type)
+    return format_travel_activity(purpose, travel_type, [destination])
 
 
 def increment_nomor(nomor_base, increment=0):

@@ -649,10 +649,32 @@ class FingerScanPdfParser:
         return f"{name}({finger_id})"
 
     @staticmethod
-    def _cell_ink_kind(image) -> str:
+    def _clean_scan_cell(image):
+        """Hapus sisa garis tabel pada tepi crop tanpa menyentuh isi sel."""
+
+        from PIL import ImageDraw
+
+        cleaned = image.convert("L").copy()
+        width, height = cleaned.size
+        pixels = cleaned.load()
+        draw = ImageDraw.Draw(cleaned)
+        x_margin = max(2, round(width * 0.08))
+        y_margin = max(2, round(height * 0.08))
+        for x in (*range(x_margin), *range(max(x_margin, width - x_margin), width)):
+            dark = sum(pixels[x, y] < 175 for y in range(height))
+            if dark >= height * 0.55:
+                draw.rectangle((max(0, x - 2), 0, min(width - 1, x + 2), height - 1), fill=255)
+        for y in (*range(y_margin), *range(max(y_margin, height - y_margin), height)):
+            dark = sum(pixels[x, y] < 175 for x in range(width))
+            if dark >= width * 0.65:
+                draw.rectangle((0, max(0, y - 2), width - 1, min(height - 1, y + 2)), fill=255)
+        return cleaned
+
+    @classmethod
+    def _cell_ink_kind(cls, image) -> str:
         from PIL import ImageOps
 
-        ink = ImageOps.invert(image.convert("L")).point(
+        ink = ImageOps.invert(cls._clean_scan_cell(image)).point(
             lambda value: 255 if value > 90 else 0
         )
         count = ink.histogram()[255]
@@ -669,16 +691,6 @@ class FingerScanPdfParser:
     @staticmethod
     def _normalize_ocr_cell(value: str) -> str:
         cleaned = value.upper().replace("—", "-").replace("–", "-")
-        letters = re.sub(r"[^A-Z]", "", cleaned)
-        if letters in {"W", "WW"}:
-            return "W"
-        # Tulisan tangan "TL" pada laporan scan sering kehilangan goresan
-        # horizontal huruf L dan dibaca T/TT/TE oleh Tesseract.
-        if letters in {"T", "TT", "TE"}:
-            return "TL"
-        if letters in {"WFH", "TL", "I", "S"}:
-            return letters
-
         time_matches: list[tuple[str, int, int]] = []
         for match in re.finditer(r"(?<!\d)(\d{1,3})\s*[:.;]\s*([0-5]\d)(?!\d)", cleaned):
             hour_text, minute = match.groups()
@@ -696,6 +708,20 @@ class FingerScanPdfParser:
             if re.search(r"^\s*-", cleaned[:start]):
                 return f"-{value}"
             return value
+
+        # Jangan mengubah noise alfabet pada jam menjadi kode. Misalnya hasil
+        # OCR ``08:38- T-`` tetap merupakan satu jam tidak lengkap, bukan TL.
+        # Kode khusus hanya boleh berasal dari crop tanpa angka.
+        letters = re.sub(r"[^A-Z]", "", cleaned)
+        if not any(character.isdigit() for character in cleaned):
+            if letters in {"W", "WW"}:
+                return "W"
+            # Tulisan tangan "TL" sering kehilangan goresan horizontal huruf
+            # L dan dibaca T/TT/TE/TW oleh Tesseract.
+            if letters in {"T", "TT", "TE", "TI", "TV", "TW"}:
+                return "TL"
+            if letters in {"WFH", "TL", "I", "S"}:
+                return letters
         return "-" if not cleaned.strip(" |_=~.") else cleaned.strip()
 
     @classmethod
@@ -709,54 +735,217 @@ class FingerScanPdfParser:
         return bool(match and cls._parse_time(match.group(1)) is not None)
 
     @classmethod
-    def _ocr_scan_cell(cls, image) -> str:
-        whitelist = "0123456789:.-/WTLISEKFH"
-        first = cls._normalize_ocr_cell(
-            cls._ocr_region(image, psm=6, whitelist=whitelist)
+    def _looks_like_handwritten_code(cls, image) -> bool:
+        """Bedakan goresan kode besar dari sel kosong/garis tabel.
+
+        Pemeriksaan ini tidak menentukan arti kode. Ia hanya menandai sel
+        dengan tinta besar agar konsensus OCR pada kolom yang sama dapat
+        memulihkan ``W``/``TL`` yang kehilangan satu goresan saat dipindai.
+        """
+
+        from PIL import ImageOps
+
+        prepared = ImageOps.autocontrast(cls._clean_scan_cell(image))
+        ink = prepared.point(lambda value: 255 if value < 165 else 0)
+        box = ink.getbbox()
+        if not box:
+            return False
+        width = box[2] - box[0]
+        height = box[3] - box[1]
+        ink_count = ink.histogram()[255]
+        return (
+            width >= prepared.width * 0.24
+            and height >= prepared.height * 0.28
+            and ink_count >= prepared.width * prepared.height * 0.012
+            # Dua baris angka tercetak jauh lebih padat daripada goresan
+            # tulisan tangan. Batas atas ini mencegah jam yang gagal di-OCR
+            # ikut diwarisi sebagai W/TL dari konsensus kolom.
+            and ink_count <= prepared.width * prepared.height * 0.13
         )
-        if cls._is_recognized_ocr_cell(first):
+
+    @classmethod
+    def _ocr_scan_cell(cls, image, *, code_like: bool = False) -> str:
+        image = cls._clean_scan_cell(image)
+        whitelist = "0123456789:.-/WTLISEKFH"
+        # W/TL/WFH memiliki bentuk dan konsensus tanggal yang cukup kuat pada
+        # scan. I/S satu goresan terlalu mudah tertukar dengan garis/digit;
+        # kandidatnya dipertahankan untuk review, sedangkan PDF bertulisan
+        # tetap dapat memakai I/S secara langsung lewat parser native.
+        special = {"W", "TL", "WFH"}
+        all_special = special | {"I", "S"}
+        first_raw = cls._ocr_region(image, psm=6, whitelist=whitelist)
+        first = cls._normalize_ocr_cell(first_raw)
+        if cls._is_recognized_ocr_cell(first) and first not in all_special | {"-"}:
             return first
+
+        first_has_digits = any(character.isdigit() for character in first_raw)
+        if code_like and not first_has_digits:
+            # PSM 11 mencari goresan terpisah. Ini penting untuk tulisan
+            # tangan ``TL`` yang sering dibaca kosong oleh mode blok karena
+            # huruf L tidak menyentuh huruf T.
+            candidates = [first]
+            for psm, threshold in ((11, False), (6, True)):
+                candidate = cls._normalize_ocr_cell(
+                    cls._ocr_region(
+                        image,
+                        psm=psm,
+                        whitelist=whitelist,
+                        threshold=threshold,
+                    )
+                )
+                candidates.append(candidate)
+            votes: dict[str, int] = defaultdict(int)
+            for candidate in candidates:
+                if candidate in special:
+                    votes[candidate] += 1
+            if votes:
+                candidate, count = max(votes.items(), key=lambda item: item[1])
+                # Satu hasil alfabet saja masih mungkin noise dari jam cetak.
+                # Dua mode OCR yang sepakat cukup untuk kode tunggal; kandidat
+                # lemah tetap disimpan sebagai INVALID dan dapat dipulihkan
+                # oleh konsensus kolom tanggal.
+                return candidate if count >= 2 else f"?{candidate}"
+            return f"?{first}" if first in all_special else first
+
+        if first in all_special:
+            return f"?{first}"
 
         thresholded = cls._normalize_ocr_cell(
             cls._ocr_region(image, psm=6, whitelist=whitelist, threshold=True)
         )
         if cls._is_recognized_ocr_cell(thresholded) and thresholded != "-":
-            return thresholded
+            return f"?{thresholded}" if thresholded in all_special else thresholded
 
         # Most one-character false positives are fragments of a printed dash.
         # Accept a dash only after a second, binarized OCR pass agrees; retain
         # single-time results as INVALID so the UI asks for human review.
         first_has_time = bool(re.search(r"\d{2}:\d{2}", first))
-        if thresholded == "-" and not first_has_time:
-            return "-"
+        if not first_has_time:
+            return first
 
-        # OCR bagian atas dan bawah secara terpisah. Cara ini memulihkan
-        # pasangan jam pada sel sempit, sekaligus membedakan fragmen garis
-        # tabel (L/E/1) dari isi sebenarnya tanpa menebak jam.
-        midpoint = max(1, image.height // 2)
-        halves = (
-            image.crop((0, 0, image.width, min(image.height, midpoint + 5))),
-            image.crop((0, max(0, midpoint - 5), image.width, image.height)),
-        )
-        half_values = [
-            cls._normalize_ocr_cell(
-                cls._ocr_region(half, psm=7, whitelist=whitelist)
-            )
-            for half in halves
-        ]
-        times: list[str] = []
-        for value in half_values:
-            times.extend(re.findall(r"\d{2}:\d{2}", value))
+        # Pisahkan dua baris jam berdasarkan proyeksi tinta, bukan titik tengah
+        # crop. Scan miring membuat baris pertama sering berada di bawah titik
+        # tengah dan terpotong menjadi satu glyph bila dibelah 50:50.
+        times = cls._ocr_time_lines(image)
         if len(times) >= 2:
-            combined = f"{times[0]}-{times[1]}"
+            combined = f"{times[0][0]}-{times[1][0]}"
             if cls._is_recognized_ocr_cell(combined):
                 return combined
-        for value in half_values:
-            if value in {"W", "WFH", "TL", "I", "S"}:
-                return value
-        if not first_has_time and "-" in half_values:
-            return "-"
+        if len(times) == 1:
+            value, relative_center = times[0]
+            return f"{value}-" if relative_center < 0.55 else f"-{value}"
         return first
+
+    @classmethod
+    def _ocr_time_lines(cls, image) -> list[tuple[str, float]]:
+        from PIL import ImageOps
+
+        prepared = ImageOps.autocontrast(cls._clean_scan_cell(image))
+        width, height = prepared.size
+        pixels = prepared.load()
+        threshold = max(2, round(width * 0.025))
+        active = [
+            y
+            for y in range(height)
+            if sum(pixels[x, y] < 180 for x in range(width)) >= threshold
+        ]
+        groups: list[list[int]] = []
+        for y in active:
+            if not groups or y > groups[-1][-1] + 4:
+                groups.append([])
+            groups[-1].append(y)
+        bands = [
+            (group[0], group[-1])
+            for group in groups
+            if group[-1] - group[0] >= max(3, round(height * 0.035))
+        ]
+        if len(bands) > 2:
+            bands = sorted(
+                sorted(bands, key=lambda band: band[1] - band[0], reverse=True)[:2]
+            )
+        values: list[tuple[str, float]] = []
+        for top, bottom in bands:
+            padding = max(4, round((bottom - top + 1) * 0.30))
+            line = prepared.crop((0, max(0, top - padding), width, min(height, bottom + padding + 1)))
+            raw = cls._ocr_region(
+                line,
+                psm=7,
+                whitelist="0123456789:.-",
+            )
+            normalized = cls._normalize_ocr_cell(raw)
+            matches = re.findall(r"\d{2}:\d{2}", normalized)
+            if matches:
+                values.append((matches[0], ((top + bottom) / 2) / max(1, height)))
+        return values
+
+    @staticmethod
+    def _reconcile_special_code_columns(scan_cells: list[dict[str, Any]]) -> None:
+        """Pulihkan kode tulisan tangan memakai konsensus satu kolom tanggal.
+
+        Pada laporan finger scan, kode kebijakan umumnya diterapkan kepada
+        beberapa pegawai di tanggal yang sama. OCR kuat dari sel lain menjadi
+        pembanding, tetapi hanya sel bertinta besar tanpa angka yang boleh
+        diperbaiki. Kolom yang campur/ambigu dibiarkan untuk pemeriksaan
+        operator sehingga jam tidak pernah ditebak menjadi kode.
+        """
+
+        special = {"W", "TL", "WFH", "I", "S"}
+        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for cell in scan_cells:
+            grouped[int(cell["column"])].append(cell)
+
+        for cells in grouped.values():
+            counts: dict[str, int] = defaultdict(int)
+            for cell in cells:
+                raw = str(cell["word"]["text"]).upper()
+                if cell["code_like"] and raw in special:
+                    counts[raw] += 1
+            if not counts:
+                continue
+            dominant, dominant_count = max(counts.items(), key=lambda item: item[1])
+            recognized_count = sum(counts.values())
+            runner_up = max(
+                (count for code, count in counts.items() if code != dominant),
+                default=0,
+            )
+            strong_consensus = (
+                dominant_count / recognized_count >= 0.67
+                or (
+                    dominant_count >= 3
+                    and dominant_count >= runner_up * 1.5
+                )
+            )
+            if dominant_count < 3 or not strong_consensus:
+                continue
+
+            for cell in cells:
+                raw = str(cell["word"]["text"]).upper()
+                if (
+                    not cell["code_like"]
+                    or (
+                        any(character.isdigit() for character in raw)
+                        and raw not in {"1"}
+                    )
+                ):
+                    continue
+                if raw not in special or (
+                    raw != dominant
+                    and dominant_count >= 3
+                    and dominant_count >= counts.get(raw, 0) * 2
+                ):
+                    cell["word"]["text"] = dominant
+                    cell["word"]["ocr_inferred"] = True
+
+    @staticmethod
+    def _local_horizontal_border(binary, left: int, right: int, band: _PixelBand) -> int:
+        """Cari posisi garis baris pada kolom lokal untuk mengimbangi scan miring."""
+
+        low = max(0, band.start - 4)
+        high = min(binary.height - 1, band.end + 4)
+        return max(
+            range(low, high + 1),
+            key=lambda y: binary.crop((left, y, right, y + 1)).histogram()[0],
+        )
 
     @classmethod
     def _ocr_table_page_data(cls, page, expected_labels: list[str]) -> _PageData:
@@ -777,6 +966,7 @@ class FingerScanPdfParser:
         scale_x = page.rect.width / image.width
         scale_y = page.rect.height / image.height
         words: list[dict[str, Any]] = []
+        scan_cells: list[dict[str, Any]] = []
         for index, label in enumerate(expected_labels):
             left = grid.date_boundaries[index]
             right = grid.date_boundaries[index + 1]
@@ -833,18 +1023,50 @@ class FingerScanPdfParser:
             for index in range(len(expected_labels)):
                 left = grid.date_boundaries[index] + padding_x
                 right = grid.date_boundaries[index + 1] - padding_x
-                cell = image.crop((left, top, right, bottom))
+                local_top = cls._local_horizontal_border(binary, left, right, upper) + padding_y
+                local_bottom = cls._local_horizontal_border(binary, left, right, lower) - padding_y
+                if local_bottom - local_top < dpi * 0.10:
+                    continue
+                cell = image.crop((left, local_top, right, local_bottom))
                 kind = cls._cell_ink_kind(cell)
                 if kind == "blank":
                     continue
-                raw = "-" if kind == "dash" else cls._ocr_scan_cell(cell)
-                words.append({
+                code_like = kind == "content" and cls._looks_like_handwritten_code(cell)
+                raw = (
+                    "-"
+                    if kind == "dash"
+                    else cls._ocr_scan_cell(cell, code_like=code_like)
+                )
+                word = {
                     "x0": left * scale_x,
                     "x1": right * scale_x,
-                    "top": row_top + scale_y,
-                    "bottom": bottom * scale_y,
+                    # Jaga token tetap berada di bawah top identitas barisnya.
+                    # Pada scan miring, garis lokal dapat lebih tinggi daripada
+                    # puncak global dan tanpa clamp token milik pegawai berikut
+                    # akan terseret ke baris sebelumnya saat _assign_cells.
+                    "top": max(row_top + scale_y, local_top * scale_y),
+                    "bottom": local_bottom * scale_y,
                     "text": raw,
+                }
+                words.append(word)
+                scan_cells.append({
+                    "column": index,
+                    "code_like": code_like,
+                    "word": word,
                 })
+        cls._reconcile_special_code_columns(scan_cells)
+        for cell in scan_cells:
+            raw = str(cell["word"]["text"]).strip()
+            if (
+                not raw.startswith("?")
+                and not cls._is_recognized_ocr_cell(raw)
+                and len(re.sub(r"\s+", "", raw)) <= 3
+            ):
+                # Pecahan satu-dua glyph (L/E/1/:) umumnya sisa garis tabel
+                # atau digit jam yang terpotong. Jangan jadikan noise kecil
+                # sebagai 31 masalah blokir; kandidat kode yang sungguh belum
+                # pasti memakai awalan '?' dan tetap masuk layar pemeriksaan.
+                cell["word"]["text"] = "-"
         if not any(IDENTITY_RE.fullmatch(str(word["text"])) for word in words):
             raise PdfParseError(
                 f"Nama dan ID pegawai pada halaman scan {page.number + 1} tidak dapat dibaca. "

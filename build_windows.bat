@@ -19,6 +19,7 @@ if not defined TESSDATA_DIR echo PERINGATAN: eng.traineddata tidak ditemukan. PD
   --collect-all sekretariat_app ^
   --collect-all tpp_finger_scan ^
   --collect-all pymupdf ^
+  --collect-all reportlab ^
   %TESSDATA_OPTION% ^
   src\sekretariat_app\main.py
 if errorlevel 1 goto :error

@@ -737,6 +737,10 @@ class TextItem(QGraphicsTextItem):
         self._start_text_width = 0.0
         self._start_font_size = 0.0
         self._resize_text = ""
+        self._resize_anchor = QPointF()
+        self._pending_text_width = 0.0
+        self._pending_font_size = 0.0
+        self._start_item_transform = QTransform()
         self._start_local_to_scene = QTransform()
         self._start_scene_to_local = QTransform()
         self.setPlainText(str(data.get("text", "Teks")))
@@ -836,21 +840,57 @@ class TextItem(QGraphicsTextItem):
             self.setPlainText(current_text)
             self.setFont(font)
 
-    def _apply_resize_font(self) -> None:
-        """Perbarui geometri tanpa pernah mengganti dokumen teks saat drag."""
-        snapshot = self._resize_text or self.toPlainText()
-        width = max(self.MIN_WIDTH, float(self.data.get("width", self.textWidth())))
-        self.setTextWidth(width)
-        self.setFont(self._configured_font())
-        self.setDefaultTextColor(QColor(str(self.data.get("color", "#0f172a"))))
-        # QGraphicsTextItem should preserve its QTextDocument, but some Qt
-        # Windows builds have cleared it while font and width changed in the
-        # same mouse move. Restore the snapshot immediately and reapply the
-        # requested width so the item never disappears from the scene.
+    @staticmethod
+    def _resize_transform(anchor: QPointF, scale_x: float, scale_y: float) -> QTransform:
+        """Bangun preview resize yang tidak mengubah ``QTextDocument``.
+
+        Qt pada sebagian build Windows dapat berhenti menggambar
+        ``QGraphicsTextItem`` ketika font dan lebar dokumennya diubah berkali-
+        kali dalam satu drag.  Preview berbasis transform menjaga glyph tetap
+        hidup; perubahan font/lebar baru dikomit sekali saat mouse dilepas.
+        """
+
+        transform = QTransform()
+        transform.translate(anchor.x(), anchor.y())
+        transform.scale(scale_x, scale_y)
+        transform.translate(-anchor.x(), -anchor.y())
+        return transform
+
+    def _commit_resize(self, handle: str) -> None:
+        desired_anchor_scene = self.mapToScene(self._resize_anchor)
+        self.setTransform(self._start_item_transform)
+        self.data["font_size"] = self._pending_font_size
+        self.data["width"] = self._pending_text_width
+
+        # Satu-satunya perubahan QTextDocument dalam alur resize dilakukan di
+        # sini. Snapshot dipulihkan bila backend teks Qt sempat mengosongkan
+        # dokumen ketika metrik font dihitung ulang.
+        snapshot = self._resize_text
+        self.setTextWidth(self._pending_text_width)
+        self.apply_font()
         if self.toPlainText() != snapshot:
-            self.document().setPlainText(snapshot)
-            self.setTextWidth(width)
-            self.setFont(self._configured_font())
+            self.setPlainText(snapshot)
+            self.setTextWidth(self._pending_text_width)
+            self.apply_font()
+
+        rect = self._content_rect()
+        new_anchor = {
+            "left": QPointF(rect.right(), rect.top()),
+            "right": QPointF(rect.left(), rect.top()),
+            "top_left": rect.bottomRight(),
+            "top_right": rect.bottomLeft(),
+            "bottom_right": rect.topLeft(),
+            "bottom_left": rect.topRight(),
+        }[handle]
+        current_anchor_scene = self.mapToScene(new_anchor)
+        scene_delta = desired_anchor_scene - current_anchor_scene
+        current_origin_scene = self.mapToScene(QPointF())
+        target_origin_scene = current_origin_scene + scene_delta
+        self.setPos(
+            self.parentItem().mapFromScene(target_origin_scene)
+            if self.parentItem()
+            else target_origin_scene
+        )
 
     def set_locked(self, locked: bool) -> None:
         self.data["locked"] = locked
@@ -882,6 +922,9 @@ class TextItem(QGraphicsTextItem):
                 self.MIN_FONT_SIZE,
                 float(self.data.get("font_size", 14.0)),
             )
+            self._pending_text_width = self._start_text_width
+            self._pending_font_size = self._start_font_size
+            self._start_item_transform = self.transform()
             self._start_local_to_scene = self.sceneTransform()
             self._start_scene_to_local, _ok = self._start_local_to_scene.inverted()
             event.accept()
@@ -897,23 +940,21 @@ class TextItem(QGraphicsTextItem):
         if handle in {"left", "right"}:
             if handle == "left":
                 width = self._start_text_rect.right() - point.x()
-                start_anchor = QPointF(
+                self._resize_anchor = QPointF(
                     self._start_text_rect.right(),
                     self._start_text_rect.top(),
                 )
             else:
                 width = point.x() - self._start_text_rect.left()
-                start_anchor = QPointF(
+                self._resize_anchor = QPointF(
                     self._start_text_rect.left(),
                     self._start_text_rect.top(),
                 )
-            self.data["width"] = max(self.MIN_WIDTH, width)
-            self._apply_resize_font()
-            self.data["width"] = self.textWidth()
-            new_rect = self._content_rect()
-            new_anchor = QPointF(
-                new_rect.right() if handle == "left" else new_rect.left(),
-                new_rect.top(),
+            self._pending_text_width = max(self.MIN_WIDTH, width)
+            self._pending_font_size = self._start_font_size
+            horizontal_scale = self._pending_text_width / self._start_text_width
+            self.setTransform(
+                self._resize_transform(self._resize_anchor, horizontal_scale, 1.0)
             )
         else:
             start_corner = {
@@ -922,7 +963,7 @@ class TextItem(QGraphicsTextItem):
                 "bottom_right": self._start_text_rect.bottomRight(),
                 "bottom_left": self._start_text_rect.bottomLeft(),
             }[handle]
-            start_anchor = {
+            self._resize_anchor = {
                 "top_left": self._start_text_rect.bottomRight(),
                 "top_right": self._start_text_rect.bottomLeft(),
                 "bottom_right": self._start_text_rect.topLeft(),
@@ -931,50 +972,30 @@ class TextItem(QGraphicsTextItem):
             start_distance = max(
                 1.0,
                 math.hypot(
-                    start_corner.x() - start_anchor.x(),
-                    start_corner.y() - start_anchor.y(),
+                    start_corner.x() - self._resize_anchor.x(),
+                    start_corner.y() - self._resize_anchor.y(),
                 ),
             )
             scale = math.hypot(
-                point.x() - start_anchor.x(),
-                point.y() - start_anchor.y(),
+                point.x() - self._resize_anchor.x(),
+                point.y() - self._resize_anchor.y(),
             ) / start_distance
             font_size = max(
                 self.MIN_FONT_SIZE,
                 min(self.MAX_FONT_SIZE, self._start_font_size * scale),
             )
             scale = font_size / self._start_font_size
-            self.data["font_size"] = font_size
-            self.data["width"] = max(self.MIN_WIDTH, self._start_text_width * scale)
-            self._apply_resize_font()
-            new_rect = self._content_rect()
-            new_anchor = {
-                "top_left": new_rect.bottomRight(),
-                "top_right": new_rect.bottomLeft(),
-                "bottom_right": new_rect.topLeft(),
-                "bottom_left": new_rect.topRight(),
-            }[handle]
-
-        desired_anchor_scene = self._start_local_to_scene.map(start_anchor)
-        current_anchor_scene = self.mapToScene(new_anchor)
-        scene_delta = desired_anchor_scene - current_anchor_scene
-        current_origin_scene = self.mapToScene(QPointF(0.0, 0.0))
-        target_origin_scene = current_origin_scene + scene_delta
-        self.setPos(
-            self.parentItem().mapFromScene(target_origin_scene)
-            if self.parentItem()
-            else target_origin_scene
-        )
+            self._pending_font_size = font_size
+            self._pending_text_width = max(self.MIN_WIDTH, self._start_text_width * scale)
+            self.setTransform(self._resize_transform(self._resize_anchor, scale, scale))
         self.update()
         event.accept()
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if self._resize_handle:
+            handle = self._resize_handle
             self._resize_handle = ""
-            if self.toPlainText() != self._resize_text:
-                self.document().setPlainText(self._resize_text)
-                self.setTextWidth(float(self.data.get("width", self.textWidth())))
-                self.setFont(self._configured_font())
+            self._commit_resize(handle)
             self.data["text"] = self._resize_text
             self.data["width"] = self.textWidth()
             self._resize_text = ""

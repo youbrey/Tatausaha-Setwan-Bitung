@@ -1,11 +1,11 @@
 # SIPS Terpadu — Sekretariat DPRD Kota Bitung
 
 Aplikasi desktop Windows berbasis Python dan PySide6 yang menyatukan navigasi
-SIPS, Rekapitulasi TPP, Dokumentasi Foto, serta Edit PDF dalam satu shell modern. Semua
+SIPS, Rekapitulasi TPP, Dokumentasi Foto, Edit PDF, serta Persediaan Barang dalam satu shell modern. Semua
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.15.1 — perbaikan Edit PDF, resize teks ala Canva, dan OCR tabel CamScanner**.
+Versi source saat ini: **0.16.3 — format surat Pendamping ASN sesuai master, termasuk Surat Izin baru dan live preview**.
 
 ## Menu aplikasi
 
@@ -21,14 +21,77 @@ Versi source saat ini: **0.15.1 — perbaikan Edit PDF, resize teks ala Canva, d
 6. Rekapitulasi TPP
 7. Dokumentasi Foto
 8. Edit PDF
-9. Kelola User
-10. Logout
+9. Persediaan Barang
+10. Kelola User
+11. Logout
 
 Menu **Dokumentasi Foto** berada tepat setelah **Rekapitulasi TPP**. Seluruh
 workspace tampil pada halaman utama di samping sidebar, bukan pada jendela atau
 browser terpisah.
 
-## Edit PDF dan optimasi versi 0.15.1
+## Persediaan Barang
+
+Menu **Persediaan Barang** memakai database SQLite aplikasi yang sama melalui
+tabel khusus berawalan `inventory_`. Fitur yang tersedia:
+
+- dashboard saldo, nilai persediaan, barang aktif, stok rendah, dan jumlah
+  surat pengeluaran;
+- referensi barang lengkap dengan kode, satuan, kategori, spesifikasi, nomor
+  kartu, harga standar, serta status aktif;
+- transaksi barang masuk dengan tanggal buku, nomor bukti, jenis transaksi,
+  harga satuan, uraian, dan keterangan;
+- transaksi barang keluar multi-item dalam satu Surat Perintah dengan metode
+  FIFO dan validasi stok atomik;
+- ComboBox bagian tujuan: Bagian Umum dan Keuangan, Bagian Perundang-Undangan
+  Persidangan dan Humas, serta Bagian Fasilitasi Penganggaran dan Pengawasan;
+- PDF **Surat Perintah Pengeluaran/Penyaluran Barang**, **Kartu Persediaan
+  Barang**, dan **Laporan Mutasi Barang**;
+- laporan/ekspor `.xlsx` Rekapan Barang Keluar per bagian dan rentang tanggal;
+- deteksi printer Windows, cetak langsung, serta pengaturan kop, logo,
+  penandatangan, margin, font tabel, dan jumlah baris kosong.
+
+Lihat [rancangan dan aturan modul Persediaan Barang](docs/PERSEDIAAN_BARANG.md).
+
+## Surat Pendamping ASN versi 0.16.3
+
+- Surat Tugas Pendamping memakai susunan identitas tanpa penomoran, redaksi
+  rombongan DPRD lengkap, serta pangkat dan NIP penandatangan dari master ASN.
+- SPD Pendamping menampilkan nama beserta NIP dan memakai maksud perjalanan
+  lengkap yang diawali `Mendampingi`, tanpa kembali ke redaksi generik.
+- Dokumen **Surat Izin Pendamping ASN** dibuat otomatis untuk setiap pendamping,
+  memiliki nomor tersendiri, dan tersedia sebagai pilihan Live Preview.
+- Template Surat Izin memakai kop Sekretariat DPRD yang stabil pada Word dan
+  LibreOffice, dengan penerima, isi, identitas, dan blok tanda tangan sesuai
+  dokumen hasil seharusnya.
+
+## Penyempurnaan surat Perjalanan Dinas versi 0.16.2
+
+- Materi kegiatan dibentuk satu kali dari kedua kolom form, lalu dipakai
+  konsisten oleh Surat Tugas, Surat Pemberitahuan, Daftar Hadir, dan SPD.
+- Surat Pemberitahuan dan Daftar Hadir tidak lagi berhenti pada nama tempat;
+  frasa `dalam rangka` beserta materi sesudahnya selalu dipertahankan.
+- Kolom Maksud Perjalanan Dinas pada SPD tidak lagi berhenti pada frasa
+  `dalam rangka` ketika pola input form berbeda atau salah satu kolom hanya
+  berisi rute.
+- Input materi pendek dan kalimat perjalanan lengkap sama-sama didukung,
+  termasuk fallback aman dari kolom Surat Pemberitahuan ke kolom Surat
+  Tugas/SPD dan sebaliknya.
+
+## Penyempurnaan format surat Perjalanan Dinas versi 0.16.1
+
+- Surat Tugas tabel memakai kembali proporsi kolom dan tinggi baris master
+  yang benar.
+- Surat Pemberitahuan multi-tujuan menyebut hanya tujuan pada halaman aktif,
+  tanpa mengulang seluruh rute atau menghasilkan teks `DPRD DPRD`.
+- SPD depan selalu satu halaman per pelaksana untuk struktur contoh lima
+  pelaksana, dengan kapitalisasi tujuan formal, tiga slot pengikut, dan kolom
+  yang tidak mendorong tanda tangan ke halaman berikutnya.
+- Daftar Hadir selalu dua halaman per tujuan: lembar keberangkatan berisi
+  peserta dan lembar tempat tugas tetap kosong untuk tanda tangan manual.
+- Materi kegiatan dipisahkan dari jenis/rute perjalanan sebelum ditempatkan
+  pada SPD dan Daftar Hadir, sehingga tujuan tidak tercetak dua kali.
+
+## Edit PDF dan optimasi versi 0.16.0
 
 Menu **Edit PDF** berada setelah Dokumentasi Foto. Tersedia merge/split,
 pengurutan/duplikasi/penghapusan/rotasi halaman, sisip halaman kosong, tambah
@@ -45,7 +108,9 @@ Unprotect memerlukan password pemilik yang benar.
 Rekap TPP dapat membaca PDF teks maupun PDF hasil scan memakai OCR lokal
 PyMuPDF/Tesseract. Untuk PDF CamScanner/image-only, aplikasi merekonstruksi
 garis tabel dan kolom tanggal, lalu membaca identitas serta sel kehadiran
-per-area. Agar OCR scan tersedia pada executable, instal Tesseract OCR
+per-area. Kode tulisan tangan `W`/`TL` dibaca dengan mode goresan terpisah dan
+konsensus terbatas pada sel bertinta besar tanpa angka di kolom tanggal yang
+sama; nilai waktu tidak ditebak menjadi kode. Agar OCR scan tersedia pada executable, instal Tesseract OCR
 dengan data bahasa Inggris (`eng.traineddata`) sebelum menjalankan
 `build_windows.bat`. Script build akan menemukan data pada instalasi standar
 Windows dan menyertakannya ke folder hasil build. OCR tetap bekerja 100% lokal
@@ -169,7 +234,8 @@ menu Perjalanan Dinas dan Surat Undangan bukan lagi placeholder. Kemampuannya:
   aplikasi menampilkan rincian cabang yang gagal.
 - Autocomplete tujuan perjalanan dan peringatan materi perjalanan yang pernah
   dibuat sebelumnya.
-- Simpan draft, muat/edit formulir dari rekap, pencarian/filter status, dan
+- Simpan draft dan tombol **Muat Draft** langsung pada form Perjalanan Dinas,
+  muat/edit formulir dari rekap, pencarian/filter status, dan
   validasi nomor surat ganda tanpa membedakan huruf besar-kecil.
 - Ekspor rekap perjalanan dinas dan surat undangan ke `.xlsx`.
 - Deteksi printer Windows, buka dokumen/folder hasil, dan kirim dokumen langsung
@@ -253,6 +319,7 @@ SekretariatDPRD/
 ├── src/
 │   ├── sekretariat_app/
 │   │   ├── documentation/    # model, canvas, migrasi proyek, export/cetak
+│   │   ├── inventory/        # SQLite FIFO dan laporan persediaan
 │   │   ├── sips/             # model, SQLite, generator dan template persuratan
 │   │   ├── ui/               # login, shell, dashboard, seluruh halaman
 │   │   ├── resources/        # tema dan icon aplikasi

@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import date, time
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -57,8 +58,51 @@ class PdfParserTests(unittest.TestCase):
     def test_handwritten_tl_is_normalized_without_guessing_times(self) -> None:
         self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("T"), "TL")
         self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("TT"), "TL")
+        self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("TW"), "TL")
+        self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("08:38- T-"), "08:38-")
+        self.assertNotEqual(FingerScanPdfParser._normalize_ocr_cell("07:3 W721"), "W")
         self.assertEqual(FingerScanPdfParser._normalize_ocr_cell("07:58"), "07:58")
         self.assertFalse(FingerScanPdfParser._is_recognized_ocr_cell("07:58"))
+
+    def test_column_consensus_recovers_split_tl_strokes_without_changing_times(self) -> None:
+        values = ["TL", "TL", "TL", "W", "S", "", "1", "07:38-"]
+        cells = [
+            {"column": 8, "code_like": True, "word": {"text": value}}
+            for value in values
+        ]
+        FingerScanPdfParser._reconcile_special_code_columns(cells)
+        self.assertEqual(
+            [cell["word"]["text"] for cell in cells],
+            ["TL", "TL", "TL", "TL", "TL", "TL", "TL", "07:38-"],
+        )
+
+    def test_column_consensus_does_not_guess_a_mixed_code_column(self) -> None:
+        cells = [
+            {"column": 4, "code_like": True, "word": {"text": value}}
+            for value in ("W", "TL", "", "1")
+        ]
+        FingerScanPdfParser._reconcile_special_code_columns(cells)
+        self.assertEqual([cell["word"]["text"] for cell in cells], ["W", "TL", "", "1"])
+
+    def test_single_time_line_uses_vertical_position_for_missing_finger(self) -> None:
+        image = Image.new("L", (80, 120), 255)
+        with patch.object(FingerScanPdfParser, "_ocr_region", return_value="07:29"), patch.object(
+            FingerScanPdfParser,
+            "_ocr_time_lines",
+            return_value=[("07:29", 0.30)],
+        ):
+            self.assertEqual(FingerScanPdfParser._ocr_scan_cell(image), "07:29-")
+        with patch.object(FingerScanPdfParser, "_ocr_region", return_value="16:51"), patch.object(
+            FingerScanPdfParser,
+            "_ocr_time_lines",
+            return_value=[("16:51", 0.75)],
+        ):
+            self.assertEqual(FingerScanPdfParser._ocr_scan_cell(image), "-16:51")
+
+    def test_single_scan_glyph_i_requires_operator_review(self) -> None:
+        image = Image.new("L", (80, 120), 255)
+        with patch.object(FingerScanPdfParser, "_ocr_region", side_effect=("", "I")):
+            self.assertEqual(FingerScanPdfParser._ocr_scan_cell(image), "?I")
 
     def test_scanned_table_grid_reconstructs_date_columns(self) -> None:
         image = Image.new("L", (1400, 800), 255)

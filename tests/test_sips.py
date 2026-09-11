@@ -4,9 +4,13 @@ import hashlib
 import tempfile
 import unittest
 import zipfile
+import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 from unittest.mock import patch
+
+from docx import Document
+from docx.oxml.ns import qn
 
 from sekretariat_app.sips.models import InvitationFormData, TravelFormData
 from sekretariat_app.sips.repository import SIPSRepository
@@ -26,6 +30,31 @@ def assert_valid_docx(test_case: unittest.TestCase, path: Path) -> None:
         )
         test_case.assertNotIn(b"{{", xml, path)
         test_case.assertNotIn(b"{%", xml, path)
+
+
+def all_docx_text(path: Path) -> str:
+    chunks: list[str] = []
+    with zipfile.ZipFile(path) as archive:
+        for name in archive.namelist():
+            if not (name.startswith("word/") and name.endswith(".xml")):
+                continue
+            root = ET.fromstring(archive.read(name))
+            chunks.extend(
+                node.text or ""
+                for node in root.iter()
+                if node.tag.endswith("}t")
+            )
+    return "".join(chunks)
+
+
+def table_grid_widths(table) -> list[int]:
+    return [int(column.get(qn("w:w"))) for column in table._tbl.tblGrid.gridCol_lst]
+
+
+def row_height(row) -> int | None:
+    properties = row._tr.trPr
+    element = properties.find(qn("w:trHeight")) if properties is not None else None
+    return int(element.get(qn("w:val"))) if element is not None else None
 
 
 class SyntheticPersonnelMaster:
@@ -48,7 +77,7 @@ class SyntheticPersonnelMaster:
         },
     ]
     dprd_signers = ["KETUA DPRD - PENANDATANGAN CONTOH"]
-    asn_signers = ["SEKRETARIS DPRD - PENANDATANGAN CONTOH"]
+    asn_signers = ["SEKRETARIS DPRD - PEGAWAI CONTOH A"]
 
 
 class SIPSMigrationTests(unittest.TestCase):
@@ -63,7 +92,7 @@ class SIPSMigrationTests(unittest.TestCase):
         packaged = project / "src" / "sekretariat_app" / "sips" / "resources" / "templates"
         legacy_files = {path.name: path for path in legacy.glob("*.docx")}
         packaged_files = {path.name: path for path in packaged.glob("*.docx")}
-        self.assertEqual(len(legacy_files), 21)
+        self.assertEqual(len(legacy_files), 23)
         self.assertEqual(legacy_files.keys(), packaged_files.keys())
         for name, source in legacy_files.items():
             self.assertEqual(
@@ -71,6 +100,34 @@ class SIPSMigrationTests(unittest.TestCase):
                 hashlib.sha256(packaged_files[name].read_bytes()).digest(),
                 name,
             )
+
+    def test_repository_can_list_only_matching_travel_drafts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = SIPSRepository(Path(temp_dir) / "sips.sqlite3")
+            common = dict(
+                document_number="",
+                document_date="2026-09-09",
+                event_start="2026-09-10",
+                event_end="2026-09-10",
+                destination="Bitung",
+                author="tester",
+                payload={},
+            )
+            wanted = repository.save(
+                record_type="travel_dprd", title="Draft DPRD",
+                status="draft", **common,
+            )
+            repository.save(
+                record_type="travel_dprd", title="Sudah dibuat",
+                status="generated", **common,
+            )
+            repository.save(
+                record_type="travel_secretariat", title="Draft Setwan",
+                status="draft", **common,
+            )
+
+            drafts = repository.list(record_type="travel_dprd", status="draft")
+            self.assertEqual([record.record_id for record in drafts], [wanted])
 
     def test_dprd_travel_generates_complete_document_set(self) -> None:
         data = TravelFormData(
@@ -98,6 +155,178 @@ class SIPSMigrationTests(unittest.TestCase):
             self.assertEqual(len(files), 5)
             for path in files:
                 assert_valid_docx(self, path)
+
+    def test_travel_documents_match_reference_structure_for_multi_destination_trip(self) -> None:
+        personnel = [
+            {"nama": "ANGGOTA CONTOH A", "jabatan": "KETUA KOMISI I DPRD KOTA BITUNG", "kategori": "Komisi I"},
+            {"nama": "ANGGOTA CONTOH B", "jabatan": "WAKIL KETUA KOMISI I DPRD KOTA BITUNG", "kategori": "Komisi I"},
+            {"nama": "ANGGOTA CONTOH C", "jabatan": "SEKRETARIS KOMISI I DPRD KOTA BITUNG", "kategori": "Komisi I"},
+            {"nama": "ANGGOTA CONTOH D", "jabatan": "ANGGOTA KOMISI III DPRD KOTA BITUNG", "kategori": "Komisi III"},
+            {"nama": "ANGGOTA CONTOH E", "jabatan": "ANGGOTA KOMISI III DPRD KOTA BITUNG", "kategori": "Komisi III"},
+        ]
+        destinations = [
+            "DPRD KABUPATEN MINAHASA UTARA",
+            "DPRD KOTA MANADO",
+            "DPRD KOTA TOMOHON",
+        ]
+        subject = (
+            "Kunjungan Kerja ke DPRD Kabupaten Minahasa Utara, DPRD Kota Manado, "
+            "dan DPRD Kota Tomohon dalam rangka Pengawasan DPRD terhadap "
+            "Penggunaan Anggaran Perangkat Daerah"
+        )
+        data = TravelFormData(
+            mode="dprd",
+            document_numbers={
+                "surat_tugas_dprd": "1235/SPT",
+                "pemberitahuan_dprd": "12345/DPRD",
+                "spd_dprd": "12345/SPD",
+            },
+            letter_date=date(2026, 9, 10),
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 12),
+            travel_type="Kunjungan Kerja",
+            basis_dprd="Dasar surat contoh",
+            basis_asn="",
+            subject=subject,
+            notice_subject=subject,
+            destinations=destinations,
+            signer_dprd=self.master.dprd_signers[0],
+            signer_asn="",
+            dprd=personnel,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            files = self.service.generate_travel(data, temp_dir)
+            by_prefix = {
+                prefix: next(path for path in files if path.name.startswith(prefix))
+                for prefix in (
+                    "surat-tugas-", "surat-pemberitahuan-", "spd-depan-", "daftar-hadir-",
+                )
+            }
+
+            task = Document(by_prefix["surat-tugas-"])
+            self.assertEqual(table_grid_widths(task.tables[0]), [704, 3544, 5380])
+            self.assertEqual([row_height(row) for row in task.tables[0].rows], [597] + [510] * 5)
+
+            notice = Document(by_prefix["surat-pemberitahuan-"])
+            openings = [paragraph.text for paragraph in notice.paragraphs if "Bersama ini" in paragraph.text]
+            self.assertEqual(len(openings), 3)
+            display_destinations = [
+                "DPRD Kabupaten Minahasa Utara", "DPRD Kota Manado", "DPRD Kota Tomohon",
+            ]
+            for index, (opening, destination) in enumerate(zip(openings, display_destinations)):
+                self.assertIn(destination, opening)
+                self.assertIn("dalam rangka Pengawasan DPRD", opening)
+                self.assertNotIn("DPRD DPRD", opening)
+                for other_index, other_destination in enumerate(display_destinations):
+                    if index != other_index:
+                        self.assertNotIn(other_destination, opening)
+
+            attendance = Document(by_prefix["daftar-hadir-"])
+            self.assertEqual(len(attendance.tables), 6)
+            for table in attendance.tables[::2]:
+                self.assertEqual(table_grid_widths(table), [704, 3969, 3119, 2126])
+                self.assertEqual([row_height(row) for row in table.rows], [850] * 6)
+                for row in table.rows[1:]:
+                    self.assertEqual(row.cells[3].text, "")
+                    self.assertEqual(len(row.cells[3].paragraphs), 1)
+            attendance_text = "\n".join(paragraph.text for paragraph in attendance.paragraphs)
+            self.assertEqual(attendance_text.count("DALAM RANGKA PENGAWASAN DPRD"), 6)
+            self.assertNotIn("KE DPRD KABUPATEN MINAHASA UTARA, DPRD KOTA MANADO", attendance_text)
+
+            spd = Document(by_prefix["spd-depan-"])
+            self.assertEqual(len(spd.tables), 5)
+            for table in spd.tables:
+                self.assertEqual(table_grid_widths(table), [439, 3809, 3298, 2768])
+                self.assertEqual(table.cell(8, 1).text.splitlines(), ["1.", "2.", "3."])
+                self.assertIn(
+                    "Kunjungan Kerja ke DPRD Kabupaten Minahasa Utara, "
+                    "DPRD Kota Manado, dan DPRD Kota Tomohon",
+                    table.cell(3, 2).text,
+                )
+                destination_cell = " ".join(table.cell(5, 2).text.split())
+                self.assertIn("Kabupaten Minahasa Utara, Kota Manado, Kota Tomohon", destination_cell)
+                self.assertNotIn("dan Kota Tomohon", table.cell(5, 2).text)
+
+    def test_travel_purpose_is_never_lost_when_form_fields_use_short_text(self) -> None:
+        purpose = "Pengawasan DPRD terhadap Penggunaan Anggaran Perangkat Daerah"
+        data = TravelFormData(
+            mode="dprd",
+            document_numbers={
+                "surat_tugas_dprd": "010/ST-DPRD/IX/2026",
+                "pemberitahuan_dprd": "020/PB-DPRD/IX/2026",
+                "spd_dprd": "030/SPD-DPRD/IX/2026",
+            },
+            letter_date=date(2026, 9, 10),
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 10),
+            travel_type="Kunjungan Kerja",
+            basis_dprd="Dasar surat pengujian",
+            basis_asn="",
+            subject=purpose,
+            notice_subject=(
+                "Pimpinan dan Anggota DPRD Kota Contoh akan melakukan "
+                f"Kunjungan Kerja dalam rangka {purpose}"
+            ),
+            destinations=["DPRD KOTA MANADO"],
+            signer_dprd=self.master.dprd_signers[0],
+            signer_asn="",
+            dprd=[self.master.dprd[1]],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            files = self.service.generate_travel(data, temp_dir)
+            notice_path = next(path for path in files if path.name.startswith("surat-pemberitahuan-"))
+            attendance_path = next(path for path in files if path.name.startswith("daftar-hadir-"))
+            spd_path = next(path for path in files if path.name.startswith("spd-depan-"))
+
+            notice = Document(notice_path)
+            notice_text = "\n".join(paragraph.text for paragraph in notice.paragraphs)
+            self.assertIn(f"Kunjungan Kerja ke DPRD Kota Manado dalam rangka {purpose}", notice_text)
+
+            attendance = Document(attendance_path)
+            attendance_text = "\n".join(paragraph.text for paragraph in attendance.paragraphs)
+            self.assertEqual(attendance_text.count(f"DALAM RANGKA {purpose.upper()}"), 2)
+
+            spd = Document(spd_path)
+            self.assertIn(f"dalam rangka {purpose}.", spd.tables[0].cell(3, 2).text)
+
+    def test_travel_purpose_falls_back_to_other_form_field_after_dangling_marker(self) -> None:
+        purpose = "Koordinasi Penguatan Tata Kelola Pemerintahan"
+        data = TravelFormData(
+            mode="dprd",
+            document_numbers={
+                "surat_tugas_dprd": "011/ST-DPRD/IX/2026",
+                "pemberitahuan_dprd": "021/PB-DPRD/IX/2026",
+                "spd_dprd": "031/SPD-DPRD/IX/2026",
+            },
+            letter_date=date(2026, 9, 10),
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 10),
+            travel_type="Kunjungan Kerja",
+            basis_dprd="Dasar surat pengujian",
+            basis_asn="",
+            subject="Kunjungan Kerja ke DPRD Kota Manado dalam rangka",
+            notice_subject=purpose,
+            destinations=["DPRD Kota Manado"],
+            signer_dprd=self.master.dprd_signers[0],
+            signer_asn="",
+            dprd=[self.master.dprd[1]],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            files = self.service.generate_travel(data, temp_dir)
+            task_path = next(path for path in files if path.name.startswith("surat-tugas-"))
+            notice_path = next(path for path in files if path.name.startswith("surat-pemberitahuan-"))
+            attendance_path = next(path for path in files if path.name.startswith("daftar-hadir-"))
+            spd_path = next(path for path in files if path.name.startswith("spd-depan-"))
+
+            task_text = "\n".join(paragraph.text for paragraph in Document(task_path).paragraphs)
+            notice_text = "\n".join(paragraph.text for paragraph in Document(notice_path).paragraphs)
+            attendance_text = "\n".join(paragraph.text for paragraph in Document(attendance_path).paragraphs)
+            spd_text = Document(spd_path).tables[0].cell(3, 2).text
+            for rendered in (task_text, notice_text, attendance_text, spd_text):
+                self.assertIn(purpose.casefold(), rendered.casefold())
 
     def test_secretariat_travel_generates_executor_and_companion_sets(self) -> None:
         data = TravelFormData(
@@ -133,6 +362,7 @@ class SIPSMigrationTests(unittest.TestCase):
             mode="dprd",
             document_numbers={
                 "surat_tugas_asn": "020/ST-ASN/VIII/2026",
+                "izin_pendamping": "020/IZIN-ASN/VIII/2026",
                 "pemberitahuan_dprd": "021/PB-DPRD/VIII/2026",
                 "spd_asn": "022/SPD-ASN/VIII/2026",
             },
@@ -151,8 +381,79 @@ class SIPSMigrationTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             files = self.service.generate_travel(data, temp_dir)
-            self.assertEqual(len(files), 4)
+            self.assertEqual(len(files), 5)
             self.assertFalse(any("daftar-hadir" in path.name for path in files))
+
+    def test_dprd_companion_documents_match_reference_wording_and_preview(self) -> None:
+        destinations = [
+            "DPRD Kabupaten Minahasa Utara",
+            "DPRD Kota Manado",
+            "DPRD Kota Tomohon",
+        ]
+        data = TravelFormData(
+            mode="dprd",
+            document_numbers={
+                "surat_tugas_dprd": "100/ST-DPRD/IX/2026",
+                "surat_tugas_asn": "101/ST-ASN/IX/2026",
+                "izin_pendamping": "102/Setwan/IX/2026",
+                "pemberitahuan_dprd": "103/PB-DPRD/IX/2026",
+                "spd_dprd": "104/SPD-DPRD/IX/2026",
+                "spd_asn": "105/SPD-ASN/IX/2026",
+            },
+            letter_date=date(2026, 9, 10),
+            start_date=date(2026, 9, 10),
+            end_date=date(2026, 9, 12),
+            travel_type="Kunjungan Kerja",
+            basis_dprd="Keputusan Pimpinan DPRD Kota Bitung",
+            basis_asn="Surat Perintah Sekretaris DPRD Kota Bitung",
+            subject="Pembahasan APBD Perubahan",
+            notice_subject="Pembahasan APBD Perubahan",
+            destinations=destinations,
+            signer_dprd=self.master.dprd_signers[0],
+            signer_asn=self.master.asn_signers[0],
+            dprd=[self.master.dprd[1], self.master.dprd[2], self.master.dprd[3]],
+            asn=[self.master.asn[1]],
+        )
+        expected_activity = (
+            "Kunjungan Kerja Pimpinan dan Anggota Komisi I bersama Anggota "
+            "Komisi II DPRD Kota Bitung ke DPRD Kabupaten Minahasa Utara, "
+            "DPRD Kota Manado, dan DPRD Kota Tomohon dalam rangka "
+            "Pembahasan APBD Perubahan"
+        )
+
+        preview = dict(self.service.travel_preview_documents(data))
+        self.assertIn("permission-asn", preview)
+        self.assertIn("surat-izin-pendamping", preview["permission-asn"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            files = self.service.generate_travel(data, temp_dir)
+            task_path = next(path for path in files if path.name.startswith("surat-tugas-pendamping-"))
+            permit_path = next(path for path in files if path.name.startswith("surat-izin-pendamping-"))
+            spd_path = next(path for path in files if path.name.startswith("spd-pendamping-depan-"))
+            for path in (task_path, permit_path, spd_path):
+                assert_valid_docx(self, path)
+
+            task = Document(task_path)
+            task_text = all_docx_text(task_path)
+            self.assertIn(f"Mendampingi {expected_activity}", task_text)
+            self.assertNotIn("1. Nama", task_text)
+            self.assertIn("Kepada", task_text)
+            self.assertIn("PEMBINA", task_text)
+            self.assertIn("NIP. 000000000000000001", task_text)
+            self.assertEqual(len(task.tables), 1)
+
+            spd = Document(spd_path)
+            self.assertIn("PEGAWAI CONTOH B", spd.tables[0].cell(1, 2).text)
+            self.assertIn("000000000000000002", spd.tables[0].cell(1, 2).text)
+            self.assertIn(f"Mendampingi {expected_activity}.", spd.tables[0].cell(3, 2).text)
+            self.assertNotIn("Melakukan", spd.tables[0].cell(3, 2).text)
+
+            permit_text = all_docx_text(permit_path)
+            self.assertIn("102/Setwan/IX/2026", permit_text)
+            self.assertIn(f"Dalam rangka Mendampingi {expected_activity}", permit_text)
+            self.assertIn("ASISTEN PEREKONOMIAN DAN", permit_text)
+            self.assertIn("PEGAWAI CONTOH B", permit_text)
+            self.assertIn("NIP. 000000000000000001", permit_text)
 
     def test_travel_validation_allows_optional_setwan_numbers(self) -> None:
         data = TravelFormData(

@@ -18,10 +18,18 @@ from sekretariat_app.sips.settings import (
     TEMPLATE_ST_DPRD_TABEL,
     TEMPLATE_ST_ASN_BIASA,
     TEMPLATE_ST_ASN_TABEL,
+    TEMPLATE_ST_PENDAMPING_ASN,
+    TEMPLATE_IZIN_PENDAMPING_ASN,
 )
-from sekretariat_app.sips.docx_utils import _combine_word_pages, _fill_table_rows_from_master, cleanup_surat_tugas_biasa
+from sekretariat_app.sips.docx_utils import (
+    _combine_word_pages,
+    _fill_table_rows_from_master,
+    cleanup_surat_tugas_biasa,
+    normalize_travel_task_table,
+)
 from sekretariat_app.sips.text_utils import (
     detect_zona_waktu,
+    format_activity_for_destination,
     format_notification_opening,
     format_notification_recipient,
     format_signature_position,
@@ -57,6 +65,7 @@ def buat_surat_tugas_dprd(ctx, selected_dprd, out_path):
         doc = Document(out_path)
         rows_data = [[str(i + 1), p.get('nama', ''), p.get('jabatan', '')] for i, p in enumerate(selected_dprd)]
         _fill_table_rows_from_master(doc, ["No", "Nama", "Jabatan"], rows_data)
+        normalize_travel_task_table(doc)
         doc.save(out_path)
 
 def buat_surat_tugas_asn(ctx, selected_asn, out_path):
@@ -91,7 +100,53 @@ def buat_surat_tugas_asn(ctx, selected_asn, out_path):
             jabatan_col = f"{p.get('jabatan', '-')}\n{p.get('pangkat', '-')}"
             rows_data.append([str(i + 1), nama_col, jabatan_col])
         _fill_table_rows_from_master(doc, ["No", "Nama", "Jabatan"], rows_data)
+        normalize_travel_task_table(doc)
         doc.save(out_path)
+
+
+def _asn_person_context(ctx, person):
+    render_ctx = ctx.copy()
+    render_ctx["nama_asn"] = person.get("nama", "")
+    render_ctx["pangkat_asn"] = person.get("pangkat", "")
+    render_ctx["nip_asn"] = person.get("nip", "")
+    render_ctx["jabatan_asn"] = person.get("jabatan", "")
+    return render_ctx
+
+
+def buat_surat_tugas_pendamping_asn(ctx, selected_asn, out_path):
+    """Buat satu halaman Surat Tugas khusus untuk setiap Pendamping ASN."""
+    page_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for index, person in enumerate(selected_asn):
+            render_ctx = _asn_person_context(ctx, person)
+            render_ctx["nomor_surat_asn"] = increment_nomor(
+                ctx.get("nomor_surat_asn", ""), index,
+            )
+            page_path = os.path.join(temp_dir, f"surat_tugas_pendamping_{index}.docx")
+            template = DocxTemplate(TEMPLATE_ST_PENDAMPING_ASN)
+            template.render(render_ctx)
+            template.save(page_path)
+            page_files.append(page_path)
+        if page_files:
+            _combine_word_pages(page_files, out_path)
+
+
+def buat_surat_izin_pendamping_asn(ctx, selected_asn, out_path):
+    """Buat Surat Permohonan Izin keluar daerah untuk Pendamping ASN."""
+    page_files = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for index, person in enumerate(selected_asn):
+            render_ctx = _asn_person_context(ctx, person)
+            render_ctx["nomor_izin_pendamping"] = increment_nomor(
+                ctx.get("nomor_izin_pendamping", ""), index,
+            )
+            page_path = os.path.join(temp_dir, f"surat_izin_pendamping_{index}.docx")
+            template = DocxTemplate(TEMPLATE_IZIN_PENDAMPING_ASN)
+            template.render(render_ctx)
+            template.save(page_path)
+            page_files.append(page_path)
+        if page_files:
+            _combine_word_pages(page_files, out_path)
 
 def _label_kategori_dprd(cat, jabatan_list):
     if cat == "Pimpinan DPRD": return "Pimpinan DPRD"
@@ -126,6 +181,16 @@ def compute_pelaksana_dprd_summary(selected_dprd):
             label = _label_kategori_dprd(cat, jabatan_list)
             summary.append((label, len(jabatan_list)))
     return summary
+
+
+def format_dprd_delegation(selected_dprd):
+    """Ringkas kelompok DPRD untuk redaksi tugas Pendamping ASN."""
+    labels = []
+    for label, _count in compute_pelaksana_dprd_summary(selected_dprd):
+        labels.append(re.sub(r"\s+DPRD$", "", label, flags=re.IGNORECASE).strip())
+    if not labels:
+        return ""
+    return f"{' bersama '.join(labels)} DPRD Kota Bitung"
 
 def _remove_empty_pelaksana_lines(doc):
     for p in list(doc.paragraphs):
@@ -249,9 +314,10 @@ def buat_surat_pemberitahuan_multi(template_path, ctx, selected_dprd, selected_a
     base_ctx["pelaksana_tugas_asn_info"] = label_asn
     base_ctx["jlh_pelaksana_asn"] = len(selected_asn)
     base_ctx["jabatan_ttd_info"] = format_signature_position(base_ctx.get("jabatan_ttd_info", ""))
-    base_ctx["isi_surat_pemberitahuan"] = format_notification_opening(
-        _notification_actor(selected_dprd, selected_asn, label_asn),
-        base_ctx.get("isi_surat_pemberitahuan", ""),
+    actor = _notification_actor(selected_dprd, selected_asn, label_asn)
+    notice_subject = (
+        base_ctx.get("materi_pemberitahuan")
+        or base_ctx.get("isi_surat_pemberitahuan", "")
     )
 
     tmpdir = tempfile.mkdtemp()
@@ -265,6 +331,14 @@ def buat_surat_pemberitahuan_multi(template_path, ctx, selected_dprd, selected_a
             page_ctx["hari_info"] = period["hari"]
             page_ctx["tanggal_bertugas_info"] = period["tanggal"]
             page_ctx["zona"] = detect_zona_waktu(period["tujuan"])
+            page_activity = format_activity_for_destination(
+                notice_subject,
+                base_ctx.get("jenis_perjalanan", ""),
+                period["tujuan"],
+            )
+            page_ctx["isi_surat_pemberitahuan"] = format_notification_opening(
+                actor, page_activity,
+            )
 
             tmp_docx = os.path.join(tmpdir, f"pemberitahuan_{idx}.docx")
             doc_tpl = DocxTemplate(template_path)

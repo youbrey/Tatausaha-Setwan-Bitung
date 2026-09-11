@@ -1,4 +1,4 @@
-# Edit PDF — versi 0.15.1
+# Edit PDF — versi 0.16.0
 
 Workspace desktop offline di sidebar setelah Dokumentasi Foto. Tidak ada
 layanan konversi internet. Instalasi dependency saat setup dilakukan sebelum

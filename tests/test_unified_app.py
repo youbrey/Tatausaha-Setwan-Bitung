@@ -78,6 +78,18 @@ class UnifiedApplicationTests(unittest.TestCase):
         documentation_position = shell_source.index('self._nav("Dokumentasi Foto", "documentation")')
         self.assertLess(tpp_position, documentation_position)
 
+    def test_inventory_menu_and_route_are_registered(self):
+        shell_source = (
+            Path(__file__).parents[1]
+            / "src"
+            / "sekretariat_app"
+            / "ui"
+            / "shell.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('self._nav("Persediaan Barang", "inventory")', shell_source)
+        self.assertIn('elif route == "inventory":', shell_source)
+        self.assertIn("InventoryPage(self.user.username)", shell_source)
+
     def test_react_workspace_can_be_migrated(self):
         pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
         photo = {"id": "photo-1", "name": "foto.png", "dataUrl": f"data:image/png;base64,{pixel}"}

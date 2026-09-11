@@ -141,6 +141,8 @@ class ShellWindow(QMainWindow):
         nav_layout.addWidget(self._nav("Rekapitulasi TPP", "tpp"))
         nav_layout.addWidget(self._nav("Dokumentasi Foto", "documentation"))
         nav_layout.addWidget(self._nav("Edit PDF", "pdf_editor"))
+        nav_layout.addWidget(self._section_label("PENGELOLAAN PERSEDIAAN"))
+        nav_layout.addWidget(self._nav("Persediaan Barang", "inventory"))
         nav_layout.addStretch()
         scroll.setWidget(nav_host)
         layout.addWidget(scroll, 1)
@@ -203,6 +205,9 @@ class ShellWindow(QMainWindow):
         elif route == "pdf_editor":
             from sekretariat_app.ui.pages.pdf_editor import PDFEditorPage
             page = PDFEditorPage()
+        elif route == "inventory":
+            from sekretariat_app.ui.pages.inventory import InventoryPage
+            page = InventoryPage(self.user.username)
         elif route == "users":
             from sekretariat_app.ui.pages.users import UsersPage
             page = UsersPage(self.repository, self.user)

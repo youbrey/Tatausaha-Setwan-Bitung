@@ -7,33 +7,54 @@ import os
 import re
 import shutil
 import tempfile
+import textwrap
 
-from docxtpl import DocxTemplate
+from docx import Document
+from docxtpl import DocxTemplate, RichText
 
 from sekretariat_app.sips.text_utils import (
+    extract_travel_purpose,
     extract_city_name,
+    format_destination_display,
     increment_nomor_spd,
     is_in_jabodetabek,
     join_indonesian,
-    strip_jenis_perjalanan_prefix,
 )
-from sekretariat_app.sips.docx_utils import _combine_word_pages
+from sekretariat_app.sips.docx_utils import _combine_word_pages, normalize_spd_front_table
 
 
-def _build_person_sppd_context(ctx, person, nomor_spd_str, destinations, transport):
+def _format_spd_city_destinations(city_names):
+    """Bungkus daftar wilayah sesuai lebar kolom tujuan pada master SPD."""
+    joined = ", ".join(city_names)
+    lines = textwrap.wrap(joined, width=43, break_long_words=False, break_on_hyphens=False)
+    return "\n ".join(lines)
+
+
+def _build_person_sppd_context(
+    ctx, person, nomor_spd_str, destinations, transport, *, include_nip=False,
+):
     p_ctx = ctx.copy()
     p_ctx["pelaksana_dprd_sppd"] = person.get('nama', '-')
+    person_display = RichText()
+    person_display.add(person.get("nama", "-"), bold=True, font="Arial", size=20)
+    if include_nip and person.get("nip"):
+        person_display.add(" /", bold=True, font="Arial", size=20)
+        person_display.add("\n", font="Arial", size=20)
+        person_display.add(person.get("nip", ""), font="Arial", size=20)
+    p_ctx["pelaksana_sppd_rich"] = person_display
     p_ctx["jabatan_pelaksana_sppd"] = person.get('jabatan', '-')
     p_ctx["nomor_surat_sppd"] = nomor_spd_str
     travel_type = ctx.get("jenis_perjalanan", "").strip()
-    destination_text = join_indonesian(destinations)
+    destination_text = join_indonesian(format_destination_display(item) for item in destinations)
     p_ctx["jenis_perjalanan_sppd"] = (
         f"{travel_type} ke {destination_text}" if destination_text else travel_type
     )
     p_ctx["transportasi_sppd"] = transport
 
-    city_names = [extract_city_name(d) for d in destinations]
-    p_ctx["tujuan_bertugas_sppd"] = join_indonesian(city_names)
+    city_names = [format_destination_display(extract_city_name(d)) for d in destinations]
+    # Kolom SPD memakai daftar wilayah, bukan kalimat; tidak ada kata "dan"
+    # sebelum tujuan terakhir pada master hasil yang menjadi acuan.
+    p_ctx["tujuan_bertugas_sppd"] = _format_spd_city_destinations(city_names)
 
     if any(is_in_jabodetabek(c) for c in city_names):
         tujuan_awal = "Kota Jakarta"
@@ -43,12 +64,18 @@ def _build_person_sppd_context(ctx, person, nomor_spd_str, destinations, transpo
     p_ctx["tanggal_mulai_sppd"] = ctx.get("tanggal_mulai", "")
     p_ctx["tanggal_akhir_sppd"] = ctx.get("tanggal_akhir", "")
     p_ctx["tanggal_surat_sppd"] = ctx.get("tanggal_surat", "")
-    subject = strip_jenis_perjalanan_prefix(ctx.get("materi_tugas", ""), travel_type)
-    if re.match(r"^ke\b", subject, flags=re.IGNORECASE):
-        parts = re.split(r"\bdalam\s+rangka\b", subject, maxsplit=1, flags=re.IGNORECASE)
-        if len(parts) == 2:
-            subject = parts[1]
+    subject = (
+        ctx.get("materi_tugas_purpose")
+        or extract_travel_purpose(ctx.get("materi_tugas", ""), travel_type)
+    )
+    subject = re.sub(r"^dalam\s+rangka\s+", "", subject, flags=re.IGNORECASE)
     p_ctx["materi_tugas_sppd"] = subject.strip().rstrip(".")
+    default_purpose = f"Melakukan {p_ctx['jenis_perjalanan_sppd']}".strip()
+    if p_ctx["materi_tugas_sppd"]:
+        default_purpose += f" dalam rangka {p_ctx['materi_tugas_sppd']}"
+    p_ctx["maksud_perjalanan_sppd"] = (
+        ctx.get("maksud_perjalanan_sppd") or default_purpose
+    ).strip().rstrip(".")
     p_ctx["tanggal_mulai_sppd_belakang"] = ctx.get("tanggal_mulai", "")
     p_ctx["tanggal_akhir_sppd_belakang"] = ctx.get("tanggal_akhir", "")
     return p_ctx
@@ -62,12 +89,17 @@ def buat_sppd_dprd(spd_depan_template, spd_belakang_template, ctx, sel_dprd, des
     transport = ctx.get("transportasi_otomatis", "Mobil")
 
     for idx, person in enumerate(sel_dprd):
-        p_ctx = _build_person_sppd_context(ctx, person, nomor_dprd, destinations, transport)
+        p_ctx = _build_person_sppd_context(
+            ctx, person, nomor_dprd, destinations, transport,
+        )
         if os.path.exists(spd_depan_template):
             doc_d = DocxTemplate(spd_depan_template)
             doc_d.render(p_ctx)
             tmp = os.path.join(tmpdir, f"dprd_depan_{idx}.docx")
             doc_d.save(tmp)
+            document = Document(tmp)
+            normalize_spd_front_table(document)
+            document.save(tmp)
             depan_files.append(tmp)
         if os.path.exists(spd_belakang_template):
             doc_b = DocxTemplate(spd_belakang_template)
@@ -90,12 +122,17 @@ def buat_sppd_asn(spd_depan_template, spd_belakang_template, ctx, sel_asn, desti
 
     for idx, person in enumerate(sel_asn):
         nomor_asn = increment_nomor_spd(nomor_asn_base, idx)
-        p_ctx = _build_person_sppd_context(ctx, person, nomor_asn, destinations, transport)
+        p_ctx = _build_person_sppd_context(
+            ctx, person, nomor_asn, destinations, transport, include_nip=True,
+        )
         if os.path.exists(spd_depan_template):
             doc_d = DocxTemplate(spd_depan_template)
             doc_d.render(p_ctx)
             tmp = os.path.join(tmpdir, f"asn_depan_{idx}.docx")
             doc_d.save(tmp)
+            document = Document(tmp)
+            normalize_spd_front_table(document)
+            document.save(tmp)
             depan_files.append(tmp)
         if os.path.exists(spd_belakang_template):
             doc_b = DocxTemplate(spd_belakang_template)

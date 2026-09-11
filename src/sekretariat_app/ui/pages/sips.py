@@ -425,13 +425,16 @@ class TravelPage(QWidget):
         self.state_label.setObjectName("StatusLabel")
         actions.addWidget(self.state_label, 1)
         reset = QPushButton("Formulir Baru")
+        load_draft = QPushButton("Muat Draft")
         draft = QPushButton("Simpan Draft")
         generate = QPushButton("Buat Semua Dokumen")
         generate.setObjectName("PrimaryButton")
         reset.clicked.connect(self.reset_form)
+        load_draft.clicked.connect(self.load_draft)
         draft.clicked.connect(self.save_draft)
         generate.clicked.connect(self.generate)
         actions.addWidget(reset)
+        actions.addWidget(load_draft)
         actions.addWidget(draft)
         actions.addWidget(generate)
         layout.addLayout(actions)
@@ -458,6 +461,7 @@ class TravelPage(QWidget):
             (
                 ("surat_tugas_dprd", "Surat Tugas DPRD"),
                 ("surat_tugas_asn", "Surat Tugas Setwan"),
+                ("izin_pendamping", "Surat Izin Pendamping ASN"),
                 ("pemberitahuan_dprd", "Pemberitahuan DPRD"),
                 ("pemberitahuan_asn", "Pemberitahuan Setwan"),
                 ("spd_dprd", "SPD DPRD"),
@@ -478,6 +482,7 @@ class TravelPage(QWidget):
             field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             is_optional_setwan = key in {
                 "surat_tugas_asn",
+                "izin_pendamping",
                 "pemberitahuan_asn",
                 "spd_asn",
                 "spd_pelaksana",
@@ -721,6 +726,41 @@ class TravelPage(QWidget):
             return
         self.audit.log(self.user.username, "sips_save_draft", self.state_label.text())
         QMessageBox.information(self, "Draft tersimpan", "Formulir perjalanan dinas telah disimpan sebagai draft.")
+
+    def load_draft(self) -> None:
+        record_type = "travel_dprd" if self.mode == "dprd" else "travel_secretariat"
+        drafts = self.repository.list(record_type=record_type, status="draft")
+        if not drafts:
+            QMessageBox.information(
+                self,
+                "Belum ada draft",
+                "Belum ada draft perjalanan dinas untuk jenis formulir ini.",
+            )
+            return
+
+        labels = [
+            f"{record.document_date or '-'} · {record.title} · {record.author} · {record.record_id[:8]}"
+            for record in drafts
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Muat Draft Perjalanan Dinas",
+            "Pilih draft yang akan dilanjutkan:",
+            labels,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        index = labels.index(selected)
+        record = drafts[index]
+        self.load_record(record.record_id)
+        self.state_label.setText(f"Draft dimuat: {record.title}")
+        self.audit.log(
+            self.user.username,
+            "sips_load_draft",
+            f"{record.record_id} · {record.title}",
+        )
 
     def generate(self) -> None:
         output = QFileDialog.getExistingDirectory(self, "Pilih folder hasil dokumen")

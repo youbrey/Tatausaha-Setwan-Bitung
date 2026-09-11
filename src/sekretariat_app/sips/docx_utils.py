@@ -145,10 +145,137 @@ def _fill_table_rows_from_master(doc, header_keywords, rows_data, max_tables=Non
         for new_tr, data_row in zip(new_trs, rows_data):
             cells_tc = new_tr.findall(qn('w:tc'))
             from docx.table import _Cell
-            for tc, val in zip(cells_tc, data_row):
+            # Bersihkan juga sel yang tidak diberi nilai. Template Daftar
+            # Hadir mempunyai empat paragraf kosong pada kolom tanda tangan;
+            # versi lama hanya mengisi tiga kolom sehingga paragraf bawaan
+            # ikut terkloning ke setiap baris dan melipatgandakan tinggi tabel.
+            for index, tc in enumerate(cells_tc):
+                val = data_row[index] if index < len(data_row) else ""
                 cell = _Cell(tc, tbl)
                 lines = val.split('\n') if isinstance(val, str) else [str(val)]
                 _set_cell_text_preserve_style(cell, lines)
+
+
+def _set_table_geometry(table, column_widths, *, table_width=None, fixed_layout=None):
+    """Tetapkan grid dan lebar sel OOXML, termasuk sel yang digabung."""
+    widths = [int(value) for value in column_widths]
+    grid_columns = table._tbl.tblGrid.gridCol_lst
+    if len(grid_columns) != len(widths):
+        raise ValueError(
+            f"Jumlah kolom tabel ({len(grid_columns)}) tidak cocok dengan geometri ({len(widths)})."
+        )
+    for grid_column, width in zip(grid_columns, widths):
+        grid_column.set(qn("w:w"), str(width))
+
+    tbl_pr = table._tbl.tblPr
+    if table_width is not None:
+        tbl_w = tbl_pr.find(qn("w:tblW"))
+        if tbl_w is None:
+            tbl_w = OxmlElement("w:tblW")
+            tbl_pr.insert(0, tbl_w)
+        tbl_w.set(qn("w:type"), "dxa")
+        tbl_w.set(qn("w:w"), str(int(table_width)))
+    if fixed_layout is not None:
+        layout = tbl_pr.find(qn("w:tblLayout"))
+        if fixed_layout:
+            if layout is None:
+                layout = OxmlElement("w:tblLayout")
+                tbl_pr.append(layout)
+            layout.set(qn("w:type"), "fixed")
+        elif layout is not None:
+            tbl_pr.remove(layout)
+
+    for tr in table._tbl.tr_lst:
+        column_index = 0
+        for tc in tr.tc_lst:
+            tc_pr = tc.get_or_add_tcPr()
+            grid_span = tc_pr.find(qn("w:gridSpan"))
+            span = int(grid_span.get(qn("w:val"))) if grid_span is not None else 1
+            cell_width = sum(widths[column_index:column_index + span])
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.insert(0, tc_w)
+            tc_w.set(qn("w:type"), "dxa")
+            tc_w.set(qn("w:w"), str(cell_width))
+            column_index += span
+
+
+def _set_row_height(row, height):
+    tr_pr = row._tr.get_or_add_trPr()
+    tr_height = tr_pr.find(qn("w:trHeight"))
+    if tr_height is None:
+        tr_height = OxmlElement("w:trHeight")
+        tr_pr.append(tr_height)
+    tr_height.set(qn("w:val"), str(int(height)))
+    tr_height.attrib.pop(qn("w:hRule"), None)
+
+
+def normalize_travel_task_table(document):
+    """Samakan tabel Surat Tugas dengan proporsi master hasil yang benar."""
+    if not document.tables:
+        return
+    table = document.tables[0]
+    if len(table.columns) != 3:
+        return
+    _set_table_geometry(table, [704, 3544, 5380])
+    for index, row in enumerate(table.rows):
+        _set_row_height(row, 597 if index == 0 else 510)
+
+
+def normalize_travel_attendance_table(document):
+    """Kompakkan tabel peserta agar satu periode tetap tepat dua halaman."""
+    if not document.tables:
+        return
+    table = document.tables[0]
+    if len(table.columns) != 4:
+        return
+    _set_table_geometry(
+        table, [704, 3969, 3119, 2126], table_width=9918, fixed_layout=True,
+    )
+    for row in table.rows:
+        _set_row_height(row, 850)
+
+
+def normalize_spd_front_table(document):
+    """Pulihkan lebar kolom SPD dan batasi slot pengikut menjadi tiga."""
+    if not document.tables:
+        return
+    table = document.tables[0]
+    if len(table.columns) != 4 or len(table.rows) < 12:
+        return
+    _set_table_geometry(table, [439, 3809, 3298, 2768], table_width=10314)
+
+    # Placeholder jenis/materi pada master memiliki ukuran langsung 12 pt,
+    # sedangkan teks tetap di sekelilingnya 11 pt. Setelah docxtpl merender,
+    # campuran ukuran itu memperbesar empat baris materi cukup banyak untuk
+    # mendorong pemisah halaman SPD ke halaman kosong. Hasil acuan memakai
+    # ukuran warisan dokumen (11 pt) secara seragam pada seluruh kalimat.
+    for run in table.cell(3, 2).paragraphs[0].runs:
+        run.font.size = None
+    for run in table.cell(0, 2).paragraphs[0].runs:
+        run.font.size = None
+
+    # Nama jabatan pelaksana dicetak tebal pada dokumen acuan, sedangkan
+    # label "b." tetap normal.
+    job_paragraph = table.cell(2, 2).paragraphs[1]
+    for run in job_paragraph.runs[1:]:
+        if run.text.strip():
+            run.bold = True
+
+    # docxtpl menerjemahkan spasi awal sesudah newline nilai tujuan menjadi
+    # tab. Pada kolom ini tab stop berada dekat tepi kanan sehingga nama kota
+    # terakhir tampak melompat ke kanan. Pertahankan line break, buang hanya
+    # karakter tab hasil konversi tersebut.
+    destination_cell = table.cell(5, 2)
+    if len(destination_cell.paragraphs) >= 2:
+        for run in destination_cell.paragraphs[1].runs:
+            if "\t" in run.text:
+                run.text = run.text.replace("\t", "")
+
+    follower_cell = table.cell(8, 1)
+    for paragraph in list(follower_cell.paragraphs[3:]):
+        paragraph._element.getparent().remove(paragraph._element)
 
 def _force_daftar_hadir_page_break(doc):
     """Memastikan SETIAP periode/tujuan daftar hadir selalu terdiri dari

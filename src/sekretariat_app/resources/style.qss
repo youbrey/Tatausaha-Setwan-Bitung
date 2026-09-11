@@ -86,7 +86,7 @@ QLabel#FieldLabel {
     font-weight: 600;
     color: #344C62;
 }
-QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit, QSpinBox, QDoubleSpinBox {
     background: #FFFFFF;
     border: 1px solid #C9D3DF;
     border-radius: 7px;
@@ -94,7 +94,7 @@ QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     min-height: 22px;
     selection-background-color: #1D73E8;
 }
-QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
     border: 1px solid #1D73E8;
 }
 QPushButton, QToolButton {

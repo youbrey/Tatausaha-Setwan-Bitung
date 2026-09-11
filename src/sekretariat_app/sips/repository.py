@@ -187,7 +187,14 @@ class SIPSRepository:
             row = database.execute("SELECT * FROM sips_documents WHERE id = ?", (record_id,)).fetchone()
         return self._to_record(row) if row else None
 
-    def list(self, *, category: str | None = None, record_type: str | None = None, search: str = "") -> list[DocumentRecord]:
+    def list(
+        self,
+        *,
+        category: str | None = None,
+        record_type: str | None = None,
+        status: str | None = None,
+        search: str = "",
+    ) -> list[DocumentRecord]:
         clauses: list[str] = []
         parameters: list[str] = []
         if category == "travel":
@@ -197,6 +204,9 @@ class SIPSRepository:
         if record_type:
             clauses.append("record_type = ?")
             parameters.append(record_type)
+        if status:
+            clauses.append("status = ?")
+            parameters.append(status)
         if search.strip():
             clauses.append("(title LIKE ? OR document_number LIKE ? OR destination LIKE ? OR author LIKE ?)")
             value = f"%{search.strip()}%"

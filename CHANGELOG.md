@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.16.3 — 2026-09-11
+
+- Memisahkan generator Surat Tugas Pendamping ASN dari generator Surat Tugas
+  Setwan generik agar struktur identitas, redaksi, dan tanda tangan mengikuti
+  dokumen hasil seharusnya.
+- Membentuk redaksi rombongan dari kategori DPRD terpilih, termasuk pola
+  `Pimpinan dan Anggota Komisi I bersama Anggota Komisi II DPRD Kota Bitung`,
+  serta mempertahankan seluruh tujuan dan materi setelah `dalam rangka`.
+- Memperbaiki SPD Pendamping agar kolom Nama memuat NIP dan kolom Maksud
+  Perjalanan Dinas diawali `Mendampingi` dengan redaksi lengkap.
+- Menambahkan master template dan generator **Surat Izin Pendamping ASN**,
+  nomor dokumen tersendiri pada form, keluaran per pendamping, serta pilihan
+  dokumen pada Live Preview.
+- Menormalkan kop Surat Izin agar logo tidak terpotong pada LibreOffice dan
+  menambahkan regresi integrasi untuk ketiga dokumen Pendamping ASN.
+
+## 0.16.2 — 2026-09-10
+
+- Memusatkan pembentukan redaksi Perjalanan Dinas menjadi satu materi
+  kanonis yang dipakai Surat Tugas, Surat Pemberitahuan, Daftar Hadir, dan
+  SPD agar tidak ada bagian kalimat yang hilang di salah satu dokumen.
+- Memulihkan frasa `dalam rangka` beserta seluruh materi kegiatan pada Surat
+  Pemberitahuan dan kedua halaman Daftar Hadir.
+- Memastikan kolom Maksud Perjalanan Dinas pada SPD tidak lagi berhenti pada
+  teks `dalam rangka` tanpa materi di belakangnya.
+- Mendukung input materi pendek, kalimat perjalanan lengkap, pembuka khusus
+  Pemberitahuan, serta fallback antarkolom saat salah satu redaksi hanya
+  berisi rute atau berhenti pada `dalam rangka`.
+- Menambahkan dua regresi integrasi untuk memeriksa isi lengkap pada keempat
+  jenis surat dan memverifikasi ulang seluruh halaman terdampak lewat render.
+
+## 0.16.1 — 2026-09-10
+
+- Menyamakan geometri tabel Surat Tugas dengan dokumen hasil seharusnya:
+  lebar kolom nomor/nama/jabatan dan tinggi baris peserta kini konsisten.
+- Memisahkan materi kegiatan dari jenis serta rute perjalanan agar Daftar
+  Hadir tidak lagi mengulang seluruh daftar tujuan pada setiap halaman.
+- Membersihkan sel tanda tangan hasil kloning dan mengompakkan Daftar Hadir
+  menjadi tepat dua halaman per tujuan tanpa tabel peserta terpotong.
+- Membuat isi Surat Pemberitahuan secara per tujuan sehingga tiap halaman
+  hanya menyebut penerima aktif dan tidak pernah mencetak `DPRD DPRD`.
+- Memulihkan lebar kolom SPD, kapitalisasi nama tujuan, daftar wilayah tanpa
+  kata sambung pada kolom tujuan, serta tiga slot pengikut sesuai master.
+- Menyeragamkan kalimat materi SPD ke 11 pt agar setiap pelaksana tetap satu
+  halaman dan blok tanda tangan tidak berpindah ke halaman berikutnya.
+- Menambahkan regresi struktur untuk paket tiga tujuan/lima pelaksana dan
+  memverifikasi hasil render 1/3/5/6 halaman terhadap empat lampiran acuan.
+
+## 0.16.0 — 2026-09-09
+
+- Memulihkan modul **Persediaan Barang** dari source 0.15.0 secara lengkap:
+  route sidebar/dashboard, SQLite, transaksi FIFO, laporan PDF, stylesheet,
+  dependency `reportlab`, dan bundling PyInstaller Windows.
+- Memperbaiki seluruh aksi Edit PDF yang sebelumnya berhenti dengan error
+  `Could not open output redirection for writing`; stdout/stderr worker kini
+  dibaca melalui pipe `QProcess`, tanpa redirection ke perangkat `nul`.
+- Mengubah resize teks Dokumentasi Foto menjadi preview transform-only. Isi
+  `QTextDocument` tidak lagi diubah selama mouse ditarik; ukuran font/lebar
+  dikomit sekali saat dilepas, sehingga teks tetap terlihat seperti di Canva.
+- Meningkatkan OCR PDF CamScanner dengan pembersihan sisa garis tabel, mode OCR
+  untuk goresan terpisah, normalisasi tulisan `W`/`TL`, dan konsensus kolom yang
+  hanya berlaku pada sel bertinta besar tanpa angka.
+- Menambahkan tombol **Muat Draft** langsung pada kedua form Perjalanan Dinas;
+  daftar hanya memuat draft sesuai jenis DPRD atau Sekretariat DPRD.
+- Menambahkan regresi otomatis untuk worker dan operasi Edit PDF, visibilitas
+  teks saat resize, filter draft, transaksi/laporan Persediaan, serta OCR kode.
+
 ## 0.15.1 — 2026-09-08
 
 - Memperbaiki seluruh pekerjaan Edit PDF pada build Windows dengan membuang

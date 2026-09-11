@@ -76,6 +76,7 @@ class DashboardPage(QWidget):
             ("Rekapitulasi TPP", "Proses PDF finger scan dan ekspor Excel", "tpp"),
             ("Dokumentasi Foto", "Susun kolase, ekspor DOCX/PDF, dan cetak", "documentation"),
             ("Edit PDF", "Gabungkan, atur, edit, dan konversi PDF offline", "pdf_editor"),
+            ("Persediaan Barang", "Kelola FIFO, barang masuk/keluar, dan laporan", "inventory"),
         )
         for index, (name, description, route) in enumerate(cards):
             card = QPushButton(f"{name}\n{description}")
