@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.16.4 — 2026-09-15
+
+- Menyamakan redaksi Surat Pemberitahuan DPRD dengan dokumen acuan: paragraf
+  pembuka hanya menyebut rombongan DPRD, sedangkan ASN dicetak sebagai
+  `Staf Pendamping` pada rincian jumlah.
+- Menambahkan blok `STAF PENDAMPING` beserta nama dan tempat tanda tangan pada
+  halaman keberangkatan Daftar Hadir untuk setiap tujuan perjalanan DPRD.
+- Mengganti master Surat Izin Pendamping ASN agar posisi penerima, indentasi
+  isi, identitas pegawai, paragraf penutup, dan tanda tangan sama dengan
+  format hasil seharusnya.
+- Menampilkan nama dan NIP ASN pada satu baris SPD serta menetapkan tingkat
+  biaya otomatis: DPRD `B`, Sekretaris DPRD `C`, Kepala Bagian `D`, dan
+  Kasubag/staf pelaksana/PPPK `E`.
+- Menambahkan pengujian regresi redaksi, format izin, daftar pendamping, dan
+  klasifikasi biaya perjalanan dinas.
+
 ## 0.16.3 — 2026-09-11
 
 - Memisahkan generator Surat Tugas Pendamping ASN dari generator Surat Tugas

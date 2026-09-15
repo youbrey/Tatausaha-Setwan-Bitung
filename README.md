@@ -5,7 +5,7 @@ SIPS, Rekapitulasi TPP, Dokumentasi Foto, Edit PDF, serta Persediaan Barang dala
 data utama diproses dan disimpan secara lokal; aplikasi tidak mengunggah
 dokumen, foto, atau data pegawai ke internet.
 
-Versi source saat ini: **0.16.3 — format surat Pendamping ASN sesuai master, termasuk Surat Izin baru dan live preview**.
+Versi source saat ini: **0.16.4 — redaksi dan format dokumen perjalanan dinas diselaraskan dengan master resmi**.
 
 ## Menu aplikasi
 
@@ -52,7 +52,7 @@ tabel khusus berawalan `inventory_`. Fitur yang tersedia:
 
 Lihat [rancangan dan aturan modul Persediaan Barang](docs/PERSEDIAAN_BARANG.md).
 
-## Surat Pendamping ASN versi 0.16.3
+## Surat Pendamping ASN versi 0.16.4
 
 - Surat Tugas Pendamping memakai susunan identitas tanpa penomoran, redaksi
   rombongan DPRD lengkap, serta pangkat dan NIP penandatangan dari master ASN.
@@ -63,6 +63,12 @@ Lihat [rancangan dan aturan modul Persediaan Barang](docs/PERSEDIAAN_BARANG.md).
 - Template Surat Izin memakai kop Sekretariat DPRD yang stabil pada Word dan
   LibreOffice, dengan penerima, isi, identitas, dan blok tanda tangan sesuai
   dokumen hasil seharusnya.
+- Surat Pemberitahuan tidak memasukkan pendamping ke paragraf pembuka dan
+  mencetaknya sebagai **Staf Pendamping** pada rincian jumlah.
+- Daftar Hadir DPRD menambahkan blok **STAF PENDAMPING** pada lembar
+  keberangkatan setiap tujuan.
+- Tingkat biaya SPD ditentukan otomatis: DPRD **B**, Sekretaris DPRD **C**,
+  Kepala Bagian **D**, serta Kasubag, staf pelaksana, dan PPPK **E**.
 
 ## Penyempurnaan surat Perjalanan Dinas versi 0.16.2
 
@@ -269,12 +275,10 @@ Prasyarat: Windows 10/11 64-bit, Python 3.11 atau lebih baru, dan VS Code.
 4. Setelah selesai, jalankan `run_app.bat` atau tekan `F5` dan pilih
    **Jalankan SIPS Terpadu**.
 
-Pada pemasangan baru, aplikasi membuat akun `admin` dengan kata sandi acak.
-Kredensial awal disimpan sementara di file `KREDENSIAL_ADMIN_AWAL.txt` pada
-folder data aplikasi dan ditampilkan lokasinya di halaman login. File tersebut
-dihapus otomatis setelah login pertama berhasil. Segera ubah kata sandi melalui
-menu **Kelola User**. Kata sandi disimpan sebagai hash PBKDF2 dengan salt unik
-di database SQLite lokal.
+Pada pemasangan baru, ikuti petunjuk aktivasi akun administrator yang ditampilkan
+oleh aplikasi. Tetapkan kata sandi unik melalui menu **Kelola User**, jangan
+memakai ulang kata sandi dari layanan lain, dan jangan memasukkan kredensial ke
+repository atau dokumentasi yang dipublikasikan.
 
 Jika ingin menjalankan manual melalui PowerShell:
 

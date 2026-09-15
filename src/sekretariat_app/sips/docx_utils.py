@@ -237,6 +237,47 @@ def normalize_travel_attendance_table(document):
         _set_row_height(row, 850)
 
 
+def append_travel_attendance_companions(document, companions):
+    """Tambahkan daftar staf pendamping tepat di bawah tabel keberangkatan.
+
+    Master daftar hadir memuat dua format per tujuan. Blok pendamping hanya
+    muncul pada format pertama, sama seperti dokumen acuan resmi.
+    """
+    if not companions or not document.tables:
+        return
+
+    anchor = document.tables[0]._tbl
+
+    heading = document.add_paragraph()
+    heading.paragraph_format.space_before = Pt(12)
+    heading.paragraph_format.space_after = Pt(0)
+    heading.paragraph_format.line_spacing = 1
+    heading_run = heading.add_run("STAF PENDAMPING :")
+    heading_run.bold = True
+    heading_run.font.name = "Arial"
+    heading_run.font.size = Pt(12)
+    heading_run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:ascii"), "Arial")
+    heading_run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:hAnsi"), "Arial")
+    anchor.addnext(heading._p)
+    anchor = heading._p
+
+    for index, person in enumerate(companions, start=1):
+        name = re.sub(r"\s+", " ", str(person.get("nama", ""))).strip().rstrip(".")
+        paragraph = document.add_paragraph()
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1
+        run = paragraph.add_run(
+            f"{index}. {name}\t\t\t\t.............................................."
+        )
+        run.font.name = "Arial"
+        run.font.size = Pt(12)
+        run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:ascii"), "Arial")
+        run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:hAnsi"), "Arial")
+        anchor.addnext(paragraph._p)
+        anchor = paragraph._p
+
+
 def normalize_spd_front_table(document):
     """Pulihkan lebar kolom SPD dan batasi slot pengikut menjadi tiga."""
     if not document.tables:

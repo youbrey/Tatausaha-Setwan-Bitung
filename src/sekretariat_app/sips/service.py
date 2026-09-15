@@ -28,6 +28,7 @@ from sekretariat_app.sips.docx_utils import (
     _fill_table_rows_from_master,
     _force_daftar_hadir_page_break,
     _force_paripurna_page_break,
+    append_travel_attendance_companions,
     build_halaman_tujuan_lain_template,
     build_tujuan_richtext,
     cleanup_skenario_paripurna,
@@ -313,7 +314,7 @@ class SIPSService:
                     lambda: buat_surat_pemberitahuan_multi(
                         TEMPLATE_PEMBERITAHUAN, context, data.dprd, data.asn,
                         data.destinations, context["nomor_pemberitahuan_dprd"], path,
-                        label_asn="Pendamping ASN",
+                        label_asn="Staf Pendamping",
                     ),
                 )
             if data.dprd and selected("spd-dprd-front", "spd-dprd-back"):
@@ -334,9 +335,8 @@ class SIPSService:
                         data.asn, data.destinations, front, back,
                     ),
                 )
-            # Perilaku SIPS lama: daftar hadir mode DPRD hanya berisi anggota
-            # DPRD. Pendamping ASN sudah memiliki Surat Tugas/SPD sendiri.
             attendance_people = data.dprd
+            attendance_companions = data.asn
             attendance_mode = "dprd"
         else:
             for people, role, role_key, task_label, notice_label, spd_key in (
@@ -379,6 +379,7 @@ class SIPSService:
                         ),
                     )
             attendance_people = data.executors + data.companions
+            attendance_companions = []
             attendance_mode = "setwan"
 
         if attendance_people and selected("attendance"):
@@ -387,6 +388,7 @@ class SIPSService:
                 report, "Daftar Hadir Perjalanan Dinas", [path],
                 lambda: self.generate_travel_attendance(
                     context, attendance_people, data.destinations, attendance_mode, path,
+                    companions=attendance_companions,
                 ),
             )
         return report
@@ -477,6 +479,8 @@ class SIPSService:
         destinations: list[str],
         mode: str,
         output_path: str | Path,
+        *,
+        companions: list[dict[str, Any]] | None = None,
     ) -> Path:
         periods = generate_periods(context.get("tanggal_mulai", ""), destinations)
         temporary_files: list[str] = []
@@ -509,6 +513,8 @@ class SIPSService:
                 rows = [[str(index + 1), item.get("nama", ""), item.get("jabatan", "")] for index, item in enumerate(people)]
                 _fill_table_rows_from_master(document, ["no", "nama", "jabatan", "tanda tangan"], rows, max_tables=1)
                 normalize_travel_attendance_table(document)
+                if mode == "dprd":
+                    append_travel_attendance_companions(document, companions or [])
                 _force_daftar_hadir_page_break(document)
                 document.save(temporary)
                 temporary_files.append(temporary)

@@ -15,6 +15,7 @@ from docx.oxml.ns import qn
 from sekretariat_app.sips.models import InvitationFormData, TravelFormData
 from sekretariat_app.sips.repository import SIPSRepository
 from sekretariat_app.sips.service import SIPSService
+from sekretariat_app.sips.sppd_generators import travel_cost_level
 
 
 def assert_valid_docx(test_case: unittest.TestCase, path: Path) -> None:
@@ -239,6 +240,7 @@ class SIPSMigrationTests(unittest.TestCase):
             for table in spd.tables:
                 self.assertEqual(table_grid_widths(table), [439, 3809, 3298, 2768])
                 self.assertEqual(table.cell(8, 1).text.splitlines(), ["1.", "2.", "3."])
+                self.assertEqual(table.cell(2, 2).paragraphs[2].text.strip(), "c. B")
                 self.assertIn(
                     "Kunjungan Kerja ke DPRD Kabupaten Minahasa Utara, "
                     "DPRD Kota Manado, dan DPRD Kota Tomohon",
@@ -443,8 +445,10 @@ class SIPSMigrationTests(unittest.TestCase):
             self.assertEqual(len(task.tables), 1)
 
             spd = Document(spd_path)
-            self.assertIn("PEGAWAI CONTOH B", spd.tables[0].cell(1, 2).text)
-            self.assertIn("000000000000000002", spd.tables[0].cell(1, 2).text)
+            spd_name = spd.tables[0].cell(1, 2).text
+            self.assertIn("PEGAWAI CONTOH B / 000000000000000002", spd_name)
+            self.assertNotIn("\n", spd_name)
+            self.assertEqual(spd.tables[0].cell(2, 2).paragraphs[2].text.strip(), "c. E")
             self.assertIn(f"Mendampingi {expected_activity}.", spd.tables[0].cell(3, 2).text)
             self.assertNotIn("Melakukan", spd.tables[0].cell(3, 2).text)
 
@@ -454,6 +458,49 @@ class SIPSMigrationTests(unittest.TestCase):
             self.assertIn("ASISTEN PEREKONOMIAN DAN", permit_text)
             self.assertIn("PEGAWAI CONTOH B", permit_text)
             self.assertIn("NIP. 000000000000000001", permit_text)
+
+            permit = Document(permit_path)
+            closing = [
+                paragraph.text for paragraph in permit.paragraphs
+                if "Demikian permohonan" in paragraph.text
+            ]
+            self.assertEqual(
+                closing,
+                [
+                    "Demikian permohonan ini kami sampaikan, atas perkenan "
+                    "dan bantuannya diucapkan terima kasih."
+                ],
+            )
+
+            notice_path = next(path for path in files if path.name.startswith("surat-pemberitahuan-"))
+            notice = Document(notice_path)
+            opening = next(paragraph.text for paragraph in notice.paragraphs if "Bersama ini" in paragraph.text)
+            self.assertNotIn("Pendamping ASN", opening)
+            self.assertNotIn("Staf Pendamping", opening)
+            notice_text = "\n".join(paragraph.text for paragraph in notice.paragraphs)
+            self.assertIn("Staf Pendamping", notice_text)
+
+            attendance_path = next(path for path in files if path.name.startswith("daftar-hadir-"))
+            attendance_text = "\n".join(
+                paragraph.text for paragraph in Document(attendance_path).paragraphs
+            )
+            self.assertEqual(attendance_text.count("STAF PENDAMPING :"), len(destinations))
+            self.assertEqual(attendance_text.count("PEGAWAI CONTOH B"), len(destinations))
+
+    def test_spd_cost_level_follows_official_position_classification(self) -> None:
+        self.assertEqual(travel_cost_level({}, dprd=True), "B")
+        self.assertEqual(travel_cost_level({"jabatan": "Sekretaris DPRD"}), "C")
+        self.assertEqual(
+            travel_cost_level({"jabatan": "Kepala Bagian Umum dan Keuangan"}),
+            "D",
+        )
+        for position in (
+            "Kasubag Tata Usaha",
+            "Staf Pelaksana",
+            "Pengelola Peraturan Perundang - Undangan",
+            "PPPK Teknis",
+        ):
+            self.assertEqual(travel_cost_level({"jabatan": position}), "E")
 
     def test_travel_validation_allows_optional_setwan_numbers(self) -> None:
         data = TravelFormData(

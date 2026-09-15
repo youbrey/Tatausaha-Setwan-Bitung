@@ -30,19 +30,33 @@ def _format_spd_city_destinations(city_names):
     return "\n ".join(lines)
 
 
+def travel_cost_level(person, *, dprd=False):
+    """Tentukan tingkat biaya perjalanan dinas berdasarkan jabatan."""
+    if dprd:
+        return "B"
+    position = re.sub(r"\s+", " ", str(person.get("jabatan", ""))).strip().casefold()
+    if "sekretaris dprd" in position:
+        return "C"
+    if re.search(r"\b(kepala bagian|kabag)\b", position):
+        return "D"
+    # Kasubag, jabatan fungsional/pelaksana, staf, dan PPPK berada di E.
+    return "E"
+
+
 def _build_person_sppd_context(
     ctx, person, nomor_spd_str, destinations, transport, *, include_nip=False,
+    dprd=False,
 ):
     p_ctx = ctx.copy()
     p_ctx["pelaksana_dprd_sppd"] = person.get('nama', '-')
     person_display = RichText()
     person_display.add(person.get("nama", "-"), bold=True, font="Arial", size=20)
     if include_nip and person.get("nip"):
-        person_display.add(" /", bold=True, font="Arial", size=20)
-        person_display.add("\n", font="Arial", size=20)
+        person_display.add(" / ", bold=True, font="Arial", size=20)
         person_display.add(person.get("nip", ""), font="Arial", size=20)
     p_ctx["pelaksana_sppd_rich"] = person_display
     p_ctx["jabatan_pelaksana_sppd"] = person.get('jabatan', '-')
+    p_ctx["tingkat_biaya_sppd"] = travel_cost_level(person, dprd=dprd)
     p_ctx["nomor_surat_sppd"] = nomor_spd_str
     travel_type = ctx.get("jenis_perjalanan", "").strip()
     destination_text = join_indonesian(format_destination_display(item) for item in destinations)
@@ -90,7 +104,7 @@ def buat_sppd_dprd(spd_depan_template, spd_belakang_template, ctx, sel_dprd, des
 
     for idx, person in enumerate(sel_dprd):
         p_ctx = _build_person_sppd_context(
-            ctx, person, nomor_dprd, destinations, transport,
+            ctx, person, nomor_dprd, destinations, transport, dprd=True,
         )
         if os.path.exists(spd_depan_template):
             doc_d = DocxTemplate(spd_depan_template)

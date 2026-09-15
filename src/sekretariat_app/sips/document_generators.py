@@ -226,7 +226,11 @@ def _notification_actor(selected_dprd, selected_asn, label_asn):
         clean = re.sub(r"\s+DPRD$", "", label, flags=re.IGNORECASE).strip()
         labels.append(f"{clean} DPRD Kota Bitung")
     actor = join_indonesian(labels)
-    if selected_asn:
+    # Pada surat Pemberitahuan perjalanan DPRD, ASN dicantumkan hanya pada
+    # rincian jumlah sebagai "Staf Pendamping". Redaksi pembuka resmi tetap
+    # menyebut kelompok DPRD saja. Untuk mode Setwan (tanpa anggota DPRD),
+    # pelaksana/pendamping ASN tetap menjadi subjek surat.
+    if selected_asn and not selected_dprd:
         asn_actor = f"{label_asn} Sekretariat DPRD Kota Bitung"
         actor = f"{actor} bersama {asn_actor}" if actor else asn_actor
     return actor
